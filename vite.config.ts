@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 
-// Served as a GitHub Project Page at https://<org>.github.io/browserqc/, so assets
-// resolve under the /browserqc/ subpath (use import.meta.env.BASE_URL in code).
+// Served at the root of the custom domain https://browserqc.org/, so assets resolve
+// under '/'. (public/CNAME sets the custom domain on every deploy. Use
+// import.meta.env.BASE_URL in code so this stays correct if the base ever changes.)
 export default defineConfig({
-  base: '/browserqc/',
+  base: '/',
   server: {
     open: '/index.html',
     port: 8091,
