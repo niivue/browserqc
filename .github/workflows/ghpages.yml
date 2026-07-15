@@ -28,5 +28,5 @@ jobs:
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          branch: gh-pages # GitHub Pages serves /BrowserQC/ from this branch.
-          folder: dist # Vite build output (base: '/BrowserQC/').
+          branch: gh-pages # GitHub Pages serves /browserqc/ from this branch.
+          folder: dist # Vite build output (base: '/browserqc/').

@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 
-// Served as a GitHub Project Page at https://<org>.github.io/BrowserQC/, so assets
-// resolve under the /BrowserQC/ subpath (use import.meta.env.BASE_URL in code).
+// Served as a GitHub Project Page at https://<org>.github.io/browserqc/, so assets
+// resolve under the /browserqc/ subpath (use import.meta.env.BASE_URL in code).
 export default defineConfig({
-  base: '/BrowserQC/',
+  base: '/browserqc/',
   server: {
     open: '/index.html',
     port: 8091,
