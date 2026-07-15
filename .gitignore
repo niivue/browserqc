@@ -1,0 +1,15 @@
+# dependencies / build output
+node_modules/
+dist/
+
+# npm is the single package authority (see AGENTS.md) — no bun lockfile
+bun.lock
+
+# OS / editor cruft
+.DS_Store
+
+# smoke-test failure screenshots
+test/*.png
+
+# transient audit review docs (audit_temp.md / audit_response.md) — not committed
+audit_*.md
