@@ -16,8 +16,9 @@ import NiiVueGPU, {
   SLICE_TYPE,
 } from '@niivue/niivue'
 import { runDcm2niix, traverseDataTransferItems } from './dcm2niix/index'
-import { Niimath } from './niimath'
-import { CSF_LABELS, WM_LABELS, parseQcTsv, renderQc } from './qc'
+import { Niimath } from '@niivue/niimath'
+import { CSF_LABELS, WM_LABELS, bindSidecar, buildQcReport, parseQcTsv, renderQc } from './qc'
+import type { QcReport } from './qc'
 
 const T1_URL = `${import.meta.env.BASE_URL}t1_crop.nii.gz`
 
@@ -35,7 +36,24 @@ const aboutBtn = $<HTMLButtonElement>('aboutBtn')
 const aboutDialog = $<HTMLDialogElement>('aboutDialog')
 const dicomPick = $<HTMLSelectElement>('dicomPick')
 const ovlSlider = $<HTMLInputElement>('ovlSlider')
+const hatToggle = $<HTMLInputElement>('hatToggle')
+const saveBtn = $<HTMLButtonElement>('saveBtn')
 const qcBody = $('qcBody')
+
+// Overlay indices into nv.volumes (reset each run; loadVolumes replaces the scene).
+// 0 = native T1, segIndex = label overlay, hatIndex = air-mask overlay (on top).
+let segIndex = -1
+let hatIndex = -1
+const HAT_OPACITY = 0.35
+
+// Last computed MRIQC-style report + the BIDS sidecar it carries. `bidsMeta` is bound
+// to the CURRENT image: it's the sidecar dropped alongside it (or a `stagedSidecar`
+// dropped just before), and is cleared for any image that arrives without one — so a
+// prior scan's metadata can never leak onto a later one. Pre-seeded by cli/qc.mjs --bids.
+let lastReport: QcReport | null = null
+let bidsMeta: unknown = (window as unknown as { __browserqcBids?: unknown }).__browserqcBids ?? null
+let stagedSidecar: unknown = null // a .json dropped alone, applied to the next image only
+let lastName = 'image'
 
 // --- NiiVue setup ---
 // The NiiVue constructor is GPU-free; attachTo() acquires the WebGPU device and
@@ -91,7 +109,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 // The vendored niimath wrapper exposes no public accessor for its Web Worker, so we
-// reach the private field (verified named `worker`, src/niimath/index.js) for the raw
+// reach the private field (verified named `worker`, @niivue/niimath core) for the raw
 // --qc post, worker recovery, and teardown. Centralised here so a wrapper rename
 // fails in ONE place — ensureNiimath() asserts the handle is real after init(), so a
 // bump fails loudly at the seam instead of silently disabling QC + leaking the worker.
@@ -193,7 +211,9 @@ function toColorMap(c: { R: number[]; G: number[]; B: number[]; labels?: string[
 // the worker directly (it stages `blob`+`extraFiles` into MEMFS, runs `cmd`, reads
 // `outName` back). The app's single-flight queue guarantees no niimath run overlaps
 // this one-shot handler swap.
-function runNiimathQc(t1: File, seg: File): Promise<string> {
+// Generic form of the same raw-post trick: run any argv and read `outName` back as
+// bytes. Used for the air-mask chain (-ras / -allineate / -otsu / -edt).
+function runNiimathRaw(cmd: string[], files: File[], outName: string): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const worker = niimathWorker()
     if (!worker) {
@@ -206,19 +226,97 @@ function runNiimathQc(t1: File, seg: File): Promise<string> {
         reject(new Error(d.message))
         return
       }
-      if (d && 'blob' in d) void (d.blob as Blob).text().then(resolve, reject)
+      if (d && 'blob' in d)
+        void (d.blob as Blob).arrayBuffer().then((b) => resolve(new Uint8Array(b)), reject)
     }
     worker.postMessage({
-      blob: t1, // staged in MEMFS under t1.name
-      extraFiles: [{ name: seg.name, data: seg }],
-      cmd: [
-        '--qc', t1.name, '--seg', seg.name,
-        '--csf', CSF_LABELS.join(','), '--wm', WM_LABELS.join(','),
-        '--out', 'qc.tsv',
-      ],
-      outName: 'qc.tsv',
+      blob: files[0],
+      extraFiles: files.slice(1).map((f) => ({ name: f.name, data: f })),
+      cmd,
+      outName,
     })
   })
+}
+
+function runNiimathQc(t1: File, seg: File): Promise<string> {
+  const cmd = [
+    '--qc', t1.name, '--seg', seg.name,
+    '--csf', CSF_LABELS.join(','), '--wm', WM_LABELS.join(','),
+    '--out', 'qc.tsv',
+  ]
+  return runNiimathRaw(cmd, [t1, seg], 'qc.tsv').then((b) => new TextDecoder().decode(b))
+}
+
+// Air ("hat") mask IQMs. Four niimath passes give the pieces MRIQC uses: an RAS
+// volume (== nibabel as_closest_canonical, so the slice fills hit the right axes), an
+// affine to the template (transform only — we need just two landmark heights), a head
+// mask, and a distance field from the head boundary into the air.
+const TEMPLATE_URL = `${import.meta.env.BASE_URL}avg152T1.nii.gz`
+// The registration template is static — fetch it once, reuse across runs. Only a
+// SUCCESSFUL fetch is memoized; a transient failure clears the cache so the next scan
+// retries instead of permanently losing air metrics.
+let templatePromise: Promise<File> | null = null
+const getTemplate = (): Promise<File> =>
+  (templatePromise ??= fetchFile(TEMPLATE_URL, 'tmpl.nii.gz').catch((e) => {
+    templatePromise = null
+    throw e
+  }))
+
+async function computeAirQc(
+  t1: File,
+  tissue: Record<string, number>,
+  worker: Worker,
+): Promise<{ metrics: Record<string, number>; hatFile: File }> {
+  const { readNii, mul4, computeAirMetrics } = await import('./qc-air')
+  const { writeNifti } = await import('./brainchop/nifti')
+  // The outer timeout resets the shared worker. If it fired while these imports were
+  // loading, this abandoned continuation must not acquire the replacement worker.
+  if (worker !== niimathWorker()) throw new Error('air metrics cancelled')
+
+  const rasBytes = await runNiimathRaw(['qc_t1.nii', '-ras', '-gz', '0', 'ras.nii'], [t1], 'ras.nii')
+  const ras = readNii(rasBytes)
+  const rasFile = new File([rasBytes], 'ras.nii')
+
+  const tmpl = await getTemplate()
+  // A fetch can resolve after the outer timeout released the queue. Stop here rather
+  // than overwriting the replacement worker's one onmessage handler.
+  if (worker !== niimathWorker()) throw new Error('air metrics cancelled')
+  const xfBytes = await runNiimathRaw(
+    ['ras.nii', '-allineate', 'tmpl.nii.gz', '-savemat', 'xf.json', '-gz', '0', 'junk.nii'],
+    [rasFile, tmpl],
+    'xf.json',
+  )
+  // moving_to_fixed maps subject world-mm → template mm; compose with the RAS affine
+  // (voxel → world) to get voxel → template mm, whose z row is the landmark plane.
+  const xf = JSON.parse(new TextDecoder().decode(xfBytes)) as { moving_to_fixed: number[][] }
+  const voxToTemplate = mul4(xf.moving_to_fixed, ras.affine)
+
+  const headBytes = await runNiimathRaw(
+    ['ras.nii', '-otsu', '5', '-fillh', '-close', '0.5', '3', '3', '-gz', '0', 'head.nii'],
+    [rasFile],
+    'head.nii',
+  )
+  const distBytes = await runNiimathRaw(
+    ['head.nii', '-binv', '-edt', '-gz', '0', 'dist.nii'],
+    [new File([headBytes], 'head.nii')],
+    'dist.nii',
+  )
+
+  const { metrics, hat } = computeAirMetrics(ras, readNii(headBytes).img, readNii(distBytes).img, voxToTemplate, tissue)
+  // Ship the hat as an overlay on the RAS grid — same world frame as the native T1, so
+  // NiiVue places it correctly without reslicing.
+  const hatBytes = writeNifti({ dims: ras.dims, pixDims: ras.pixDims, affine: ras.affine }, hat)
+  return { metrics, hatFile: new File([hatBytes], 'airmask.nii') }
+}
+
+// Draw the hat as a translucent blue layer showing which voxels feed the air metrics.
+// Off by default; the #hatToggle checkbox sets its opacity.
+async function addHatOverlay(hatFile: File): Promise<void> {
+  if (isCleanedUp) return
+  await nv.addVolume({ url: hatFile, name: 'airmask.nii', colormap: 'blue', opacity: 0 } as ImageFromUrlOptions)
+  hatIndex = nv.volumes.length - 1
+  hatToggle.disabled = false
+  if (hatToggle.checked) nv.setVolume(hatIndex, { opacity: HAT_OPACITY })
 }
 
 // MRIQC-style QC on the native input + the native-space segmentation. The T1 is
@@ -228,15 +326,40 @@ async function computeQc(segBytes: Uint8Array): Promise<void> {
   await ensureNiimath()
   const t1 = await nv.saveVolume({ volumeByIndex: 0, filename: '' })
   if (!(t1 instanceof Uint8Array)) throw new Error('could not serialize the input volume')
+  // Both inputs are uncompressed .nii (saveVolume with an empty filename does not gzip;
+  // writeNifti emits raw) — no gunzip cost, and `--qc` writes a TSV so output gz never
+  // applies. Name matches content so niimath doesn't attempt a gunzip.
+  const t1File = new File([t1], 'qc_t1.nii')
   const tsv = await withTimeout(
-    // Both inputs are uncompressed .nii (saveVolume with an empty filename does not
-    // gzip; writeNifti emits raw) — no gunzip cost, and `--qc` writes a TSV so output
-    // gz never applies. Name matches content so niimath doesn't attempt a gunzip.
-    runNiimathQc(new File([t1], 'qc_t1.nii'), new File([segBytes], 'qc_seg.nii')),
+    runNiimathQc(t1File, new File([segBytes], 'qc_seg.nii')),
     WORKER_TIMEOUT_MS,
     'niimath --qc',
   )
-  renderQc(qcBody, parseQcTsv(tsv))
+  const metrics = parseQcTsv(tsv)
+  // niimath's --qc has no air term, so the background IQMs are computed here from an
+  // MRIQC-style "hat" mask. Non-fatal: a failure just omits those keys. The aggregate
+  // pipeline is bounded; a timeout/error may leave the worker mid-WASM-call, so reset
+  // it (as the QC catch does).
+  try {
+    setStatus('Computing background (air) metrics…')
+    const worker = niimathWorker()
+    if (!worker) throw new Error('niimath worker unavailable')
+    const air = await withTimeout(computeAirQc(t1File, metrics, worker), WORKER_TIMEOUT_MS, 'air metrics')
+    Object.assign(metrics, air.metrics)
+    // `cnr` (with the air term) supersedes niimath's air-free estimate.
+    if ('cnr' in metrics) delete metrics.cnr_noair
+    await addHatOverlay(air.hatFile)
+  } catch (err) {
+    console.warn('air metrics unavailable', err)
+    resetNiimathWorker()
+  }
+  const vol0 = nv.volumes[0]
+  lastReport = buildQcReport(metrics, { dims: vol0.hdr.dims, pixDims: vol0.hdr.pixDims }, bidsMeta)
+  // Automation seam: the panel renders 3 significant figures, so expose the full
+  // report at full precision for cli/qc.mjs, which drives this page headlessly.
+  ;(window as unknown as { browserqcMetrics?: unknown }).browserqcMetrics = lastReport
+  saveBtn.disabled = false
+  renderQc(qcBody, metrics)
 }
 
 // Load `file` as the displayed volume, segment it, and QC the result.
@@ -244,6 +367,15 @@ async function runSegment(file: File): Promise<void> {
   if (isCleanedUp) return // a job queued before cleanup() (HMR) must not touch a dead nv
   spin(true)
   busy = true
+  lastReport = null
+  // Clear the automation seam too, so a headless client waiting on `browserqcMetrics`
+  // after a second load can't read the previous scan's report.
+  ;(window as unknown as { browserqcMetrics?: unknown }).browserqcMetrics = undefined
+  lastName = file.name
+  segIndex = -1
+  hatIndex = -1
+  saveBtn.disabled = true
+  hatToggle.disabled = true
   renderQc(qcBody, null) // clear any prior QC while we recompute
   const t0 = performance.now()
   try {
@@ -290,17 +422,18 @@ async function runSegment(file: File): Promise<void> {
       opacity: Number(ovlSlider.value) / 255,
     } as ImageFromUrlOptions)
     if (isCleanedUp) return
+    segIndex = nv.volumes.length - 1 // fixed handle: the air overlay is added on top later
 
     const cmapRes = await fetch(segColormapUrl(rootURL))
     if (!cmapRes.ok) throw new Error(`fetch colormap failed: ${cmapRes.status}`)
     const cmap = await cmapRes.json()
-    await nv.setColormapLabel(nv.volumes.length - 1, toColorMap(cmap))
+    await nv.setColormapLabel(segIndex, toColorMap(cmap))
     // Scene mutation is done. Apply the latest slider value first — a drag during the
     // locked window updated the control but the handler dropped it, so `addVolume`'s
     // sampled opacity may be stale — then release the lock so subsequent drags land
     // during the (scene-untouching) QC run below. `finally` still clears it if we
     // bailed earlier.
-    void nv.setVolume(nv.volumes.length - 1, { opacity: Number(ovlSlider.value) / 255 })
+    void nv.setVolume(segIndex, { opacity: Number(ovlSlider.value) / 255 })
     busy = false
 
     // QC on the result. Non-fatal: a QC failure must not discard the segmentation
@@ -331,11 +464,22 @@ async function handleDrop(filesPromise: Promise<File[]>): Promise<void> {
   spin(true)
   try {
     setStatus('Reading dropped files…')
-    const files = await filesPromise
+    const all = await filesPromise
+    // A dropped BIDS sidecar (.json) rides along as bids_meta in the saved report; it is
+    // metadata only and never affects the metrics.
+    const sidecar = all.find((f) => /\.json$/i.test(f.name))
+    let dropMeta: unknown = null
+    if (sidecar) {
+      try { dropMeta = JSON.parse(await sidecar.text()) } catch { dropMeta = null }
+    }
+    const files = all.filter((f) => !/\.json$/i.test(f.name))
+    const t = bindSidecar(dropMeta, stagedSidecar, files.length > 0)
+    stagedSidecar = t.staged
     if (files.length === 0) {
-      setStatus('Drop contained no readable files.')
+      setStatus(dropMeta ? 'Sidecar stored — now drop the image.' : 'Drop contained no readable files.')
       return
     }
+    bidsMeta = t.bind // this image's own sidecar, else a staged one, else null
     // Fast-path a single obvious volume file straight to segmentation.
     if (files.length === 1 && DIRECT_VOLUME_RE.test(files[0].name)) {
       await runSegment(files[0])
@@ -350,6 +494,7 @@ async function handleDrop(filesPromise: Promise<File[]>): Promise<void> {
       return
     }
     if (niftiFiles.length > 1) {
+      bidsMeta = null // one dropped sidecar cannot be associated safely across series
       dcmConverted = niftiFiles
       dicomPick.replaceChildren()
       niftiFiles.forEach((f, i) => {
@@ -391,7 +536,15 @@ async function init(): Promise<void> {
     setStatus(noWebGpu)
     return
   }
-  // Load + segment the bundled default subject.
+  // Load + segment the bundled default subject, with its BIDS sidecar as bids_meta.
+  // (Skipped under the CLI, which pre-seeds __browserqcBids and 404s this fetch so a
+  // CLI-injected image never inherits the default subject's metadata.)
+  if (!bidsMeta) {
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}t1_crop.json`)
+      if (res.ok) bidsMeta = await res.json()
+    } catch { /* no sidecar — fine */ }
+  }
   const t1 = await fetchFile(T1_URL, 't1_crop.nii.gz')
   await runSegment(t1)
 }
@@ -425,6 +578,22 @@ dicomPick.addEventListener(
   ac,
 )
 aboutBtn.addEventListener('click', () => aboutDialog.showModal(), ac)
+// Save the MRIQC-style report next to nothing — a plain client-side download.
+saveBtn.addEventListener(
+  'click',
+  () => {
+    if (!lastReport) return
+    const url = window.URL.createObjectURL(
+      new Blob([`${JSON.stringify(lastReport, null, 2)}\n`], { type: 'application/json' }),
+    )
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${lastName.replace(/\.(nii|nii\.gz|mgz|mgh)$/i, '')}_qc.json`
+    a.click()
+    setTimeout(() => window.URL.revokeObjectURL(url), 0)
+  },
+  ac,
+)
 // Overlay opacity — drives the segmentation overlay (last volume) when present.
 ovlSlider.addEventListener(
   'input',
@@ -432,8 +601,17 @@ ovlSlider.addEventListener(
     // Skip while a segmentation is mid-flight — mutating the scene between its
     // loadVolumes/addVolume awaits can hit the wrong volume or throw. The final
     // opacity is applied via addVolume's `opacity` when the overlay lands.
-    if (!busy && nv.volumes.length > 1)
-      void nv.setVolume(nv.volumes.length - 1, { opacity: Number(ovlSlider.value) / 255 })
+    if (!busy && segIndex >= 0)
+      void nv.setVolume(segIndex, { opacity: Number(ovlSlider.value) / 255 })
+  },
+  ac,
+)
+// Air-mask overlay toggle (the translucent blue "hat").
+hatToggle.addEventListener(
+  'change',
+  () => {
+    if (!busy && hatIndex >= 0)
+      void nv.setVolume(hatIndex, { opacity: hatToggle.checked ? HAT_OPACITY : 0 })
   },
   ac,
 )

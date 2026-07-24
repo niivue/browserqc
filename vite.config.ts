@@ -1,8 +1,7 @@
 import { defineConfig } from 'vite'
 
-// Served at the root of the custom domain https://browserqc.org/, so assets resolve
-// under '/'. (public/CNAME sets the custom domain on every deploy. Use
-// import.meta.env.BASE_URL in code so this stays correct if the base ever changes.)
+// Served as a GitHub Project Page at https://<org>.github.io/BrowserQC/, so assets
+// resolve under the /BrowserQC/ subpath (use import.meta.env.BASE_URL in code).
 export default defineConfig({
   base: '/',
   server: {
@@ -19,9 +18,8 @@ export default defineConfig({
   // WASM worker in these packages — it can't resolve the worker module under
   // .vite/deps. Exclude them so the worker stays a standalone module whose runtime
   // URL resolves. (Production `vite build` uses Rollup and handles it either way;
-  // this is dev-mode only.) niimath is vendored as local source (src/niimath/), not a
-  // dep, so it isn't prebundled and needs no exclusion — only @niivue/dcm2niix does.
+  // this is dev-mode only.)
   optimizeDeps: {
-    exclude: ['@niivue/dcm2niix'],
+    exclude: ['@niivue/dcm2niix', '@niivue/niimath'],
   },
 })

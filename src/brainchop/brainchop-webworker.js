@@ -404,8 +404,19 @@ async function inferenceFullVolumePhase1(
 }
 
 async function enableProductionMode(textureF16Flag = true) {
-  // -- tf.setBackend('cpu')
-  tf.setBackend('webgl')
+  // BrowserQC patch: prefer WebGL, fall back to CPU when it is unavailable — the Node
+  // CLI (cli/qc.mjs) runs this same engine headless, where WebGL cannot initialize
+  // (createCanvas throws); a browser without WebGL2 lands here too. The fallback must
+  // select 'cpu' BY NAME: tfjs keys its kernel registry by backend name, so aliasing
+  // the 'webgl' name to a CPU backend runs WebGL kernels against a CPU backend object
+  // and crashes. Browsers with WebGL are unaffected.
+  // Order: WebGL (browser GPU) → tensorflow (native, if the host loaded tfjs-node) →
+  // cpu (pure JS, correct but ~1000x slower on 3D convs).
+  let picked = false
+  for (const name of ['webgl', 'tensorflow', 'cpu']) {
+    try { if (await tf.setBackend(name)) { picked = true; break } } catch { /* unavailable */ }
+  }
+  if (!picked) throw new Error('no usable tfjs backend (tried webgl, tensorflow, cpu)')
   // -- tf.removeBackend('cpu')
   // -- Calling enableProdMode() method
   await tf.enableProdMode()

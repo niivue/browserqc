@@ -13,3 +13,6 @@ test/*.png
 
 # transient audit review docs (audit_temp.md / audit_response.md) — not committed
 audit_*.md
+
+# local QC scratch data (subject scans / reference MRIQC reports) — never commit
+qc/

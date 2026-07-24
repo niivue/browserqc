@@ -207,8 +207,10 @@ main {
   border-radius: 4px;
 }
 
+/* Anatomically intuitive: GM neutral gray (distinct from the dark panel), WM white,
+   CSF water blue. */
 .qc-fill-gm {
-  background: #6f8cff;
+  background: #9ca3af;
 }
 
 .qc-fill-wm {
@@ -216,7 +218,7 @@ main {
 }
 
 .qc-fill-csf {
-  background: #4bd0c4;
+  background: #4aa6f0;
 }
 
 .qc-tval {

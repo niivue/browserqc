@@ -1,0 +1,18 @@
+{
+  "Modality": "MR",
+  "Manufacturer": "Siemens",
+  "ManufacturersModelName": "MAGNETOM Vida",
+  "MagneticFieldStrength": 3,
+  "MRAcquisitionType": "3D",
+  "PulseSequenceType": "MPRAGE",
+  "ScanningSequence": "GR\\IR",
+  "SequenceVariant": "SK\\SP\\MP",
+  "RepetitionTime": 2.3,
+  "EchoTime": 0.00232,
+  "InversionTime": 0.9,
+  "FlipAngle": 8,
+  "SliceThickness": 0.9,
+  "PixelBandwidth": 199,
+  "ParallelReductionFactorInPlane": 2,
+  "ReceiveCoilName": "HeadNeck_64_CS"
+}

@@ -11,13 +11,17 @@
 // Usage:  npm run build && npm run test:e2e
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const PORT = 4173
-const URL = `http://localhost:${PORT}/BrowserQC/`
+// Read the deploy base from vite.config so this works whether the site is served at a
+// /repo/ project-page subpath or at a custom-domain root (base: '/').
+const base = readFileSync(join(root, 'vite.config.ts'), 'utf8').match(/base:\s*'([^']*)'/)?.[1] ?? '/'
+const URL = `http://localhost:${PORT}${base}`
 
 // --- boot vite preview ---
 // detached so the child is its own process-group leader; killing -pid then reaps
@@ -117,7 +121,15 @@ try {
     { timeout: 240000 },
   ).catch(() => fail('auto segmentation + QC did not complete (NiiVue attach / model / niimath?)', page))
   if (!/CJV/.test(await qcText())) await fail('QC panel did not populate after segmentation', page)
+  // Air-mask metrics + overlay: SNRd only appears if the hat pipeline ran, and the
+  // toggle is enabled only once the overlay volume is added.
+  if (!/SNRd/.test(await qcText())) await fail('air-mask metrics (SNRd) missing from panel', page)
+  if (await page.$eval('#hatToggle', (el) => el.disabled)) await fail('air-mask toggle not enabled', page)
   console.log('✓ auto segmentation + niimath QC ran, panel populated')
+
+  // 2b. Toggle the air-mask overlay on/off without throwing.
+  await page.click('#hatToggle')
+  await page.click('#hatToggle')
 
   // 3. Opacity slider drives the overlay (last volume) without throwing.
   await page.$eval('#ovlSlider', (el) => {
