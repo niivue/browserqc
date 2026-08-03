@@ -2,7 +2,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## What this is
 
-**BrowserQC** — browser-only automated MRI quality control. Drag in a NIfTI (or a DICOM folder) and it runs on its own: conform → deep-learning parcellation ("Subcortical + GWM") → back-project the labels onto the native scan as a colour overlay → niimath MRIQC-style quality metrics in a side panel. **No data leaves the machine** — everything runs in WebAssembly + WebGPU/WebGL2. There is no method picker and no Apply button: segmentation + QC run automatically whenever an image loads (startup + every drop).
+**BrowserQC** — browser-only automated MRI quality control. Drag in a NIfTI (or a DICOM folder) and it runs on its own: conform → deep-learning parcellation ("Subcortical + GWM") → back-project the labels onto the native scan as a colour overlay → niimath MRIQC-style quality metrics in a side panel. **No data leaves the machine** — everything runs in WebAssembly + WebGPU. There is no method picker and no Apply button: segmentation + QC run automatically whenever an image loads (startup + every drop).
 
 **Keep it minimal.** This is a worked example meant to teach the concept — readable end to end. Prefer the smallest change that works. Don't add defensive code for cases that can't happen, speculative options, or abstractions for a single caller; bloat obscures the idea. Guard real failure paths, not imaginary ones.
 
@@ -13,22 +13,22 @@ npm run dev        # vite dev server on http://localhost:8091
 npm run build      # tsc --noEmit (typecheck) + vite build to dist/
 npm run typecheck  # tsc --noEmit only
 npm run preview    # serve the production build (port 4173)
-npm run test:unit  # node --test — pure-function correctness (src/qc-air.ts math)
+npm run test:unit  # node --test — src/qc-air.ts math + the qc.ts sidecar state machine
 npm run test:e2e   # builds first, then headless-Chromium smoke
 ```
 
-The linter is just `tsc`; "validate before commit" = typecheck + unit + build + smoke. `test:unit` uses Node's built-in runner (no dependency) on the air-metric math (median even/odd, `stats`, hat selection, artifact exclusion / `qi_1`) — the numeric code the smoke can't check. `test:e2e` builds first (so it can't pass against a stale `dist`), boots `vite preview` (failing fast on a port clash), and drives the real app in system Chrome with software WebGPU (`--use-gl=angle --enable-unsafe-swiftshader`). It loads the default image, waits for the **auto** segmentation + QC to complete, asserts the QC panel populated, drives the Opacity slider + About dialog, and **fails on any `console.error`/page error** — keep that gate meaningful (a handled capability-absence should `console.warn`, not `error`).
+The linter is just `tsc`; "validate before commit" = typecheck + unit + build + smoke. `test:unit` uses Node's built-in runner (no dependency) on the air-metric math (median even/odd, `stats`, hat selection, artifact exclusion / `qi_1`) — the numeric code the smoke can't check. `test:e2e` builds first (so it can't pass against a stale `dist`), boots `vite preview` (failing fast on a port clash), and drives the real app in system Chrome with software WebGPU (`--use-gl=angle --enable-unsafe-swiftshader`). It loads the default image, waits for the **auto** segmentation + QC to complete, asserts the QC panel populated **and that `SNRd` is present**, asserts the Air-mask checkbox became enabled and toggles that overlay, drives the Opacity slider + About dialog, and **fails on any `console.error`/page error** — keep that gate meaningful (a handled capability-absence should `console.warn`, not `error`).
 
 ## Architecture
 
-Single-page app, no framework. [src/main.ts](src/main.ts) is the whole UI controller. There are no toolbar controls — the only UI is the canvas, the right-side QC panel (with the Opacity slider + About button), and the drag-drop / DICOM-picker. It wires four subsystems:
+Single-page app, no framework. [src/main.ts](src/main.ts) is the whole UI controller. There are no toolbar controls — the only UI is the canvas, the right-side QC panel (Opacity slider, Air-mask checkbox, Save button, About button), and the drag-drop / DICOM-picker. It wires four subsystems:
 
 - **NiiVue** (`@niivue/niivue`, WebGPU) — renders volumes. Constructed eagerly, but `attachTo('gl1')` is deferred to `init()` behind a guard: `init()` checks `navigator.gpu` *and* try/catches `attachNiiVue()`, so every WebGPU-unavailable path (no adapter, device-creation failure, blocklisted GPU) shows a friendly message instead of an unhandled rejection.
-- **brainchop** (vendored tfjs engine in [src/brainchop/](src/brainchop/)) — the deep-learning parcellation. See "Segmentation".
+- **brainchop** (vendored `@niivue/brainchop`, a WebGPU wasm module in [src/brainchop/](src/brainchop/) + [public/brainchop/](public/brainchop/)) — the deep-learning parcellation. See "Segmentation".
 - **niimath** (`@niivue/niimath`, BSD build) — the QC metrics (`--qc`) + the air-mask chain, in a WASM worker. See "niimath (the QC + air engine)".
 - **dcm2niix** ([src/dcm2niix/](src/dcm2niix/)) — converts dropped DICOM folders to NIfTI; drop traversal uses `webkitGetAsEntry()` and stamps `_webkitRelativePath` so dcm2niix groups by series.
 
-**Auto-run flow.** Every image (the bundled default at startup, a dropped NIfTI, or a picked dcm2niix series) is passed to `runSegment(file)`, which is the whole pipeline: display it → conform → segment → back-project → overlay → QC. See "Segmentation" + "QC".
+**Auto-run flow.** Every image (the bundled default at startup, a dropped NIfTI, or a picked dcm2niix series) is passed to `runSegment(file)`, which is the whole pipeline: display it → segment (conform + inference + back-projection all inside the wasm module) → overlay → QC. See "Segmentation" + "QC".
 
 ### Concurrency — single-flight (gotcha)
 Loads, drops, and segmentation runs must not overlap: everything is serialized through one promise chain (`enqueue`/`pending`). Required because (a) the niimath wrapper reassigns the worker's one `onmessage` handler per run — and our raw `--qc` post does the same (see "QC") — so two overlapping jobs on the same worker cross-wire each other's results; and (b) NiiVue holds one displayed scene. One job at a time.
@@ -42,18 +42,77 @@ A failed niimath run can leave the worker heap + MEMFS in an undefined state. Th
 
 Runs [brainchop](https://github.com/neuroneural/brainchop)'s default "Subcortical + GWM" model (id 3, `model16chan18cls` — a 16-channel gridding-free MeshNet, 17 regions: GWM + subcortical) and overlays the labels on the input. Ported from `brainchop-test`.
 
-**Vendored engine** in [src/brainchop/](src/brainchop/) for easy upstream re-sync: `brainchop-webworker.js`, `inference-logic.js`, `tensor-utils.js`, `bwlabels.js`, `diagnostic-stats.js`, `brainchop-parameters.js` (full model list kept as-is; we only instantiate id 3). These are **niivue-independent** — they need only `@tensorflow/tfjs` and take `(opts, modelEntry, niftiHeader, niftiImage, callbackImg, callbackUI)`. We copied **only the tfjs/WebGL2 path**, not brainchop's custom-WebGPU runners — same weights, same segmentation. Assets: [public/models/model16chan18cls/](public/models/model16chan18cls/) `model.json` + `model.bin` (tfjs layers-model) + `colormap.json` (the WebGPU `.safetensors` were intentionally not copied). tfjs is large, so all of this is `import()`ed lazily on first use (code-split out of the initial bundle).
+**One wasm module, vendored as build output.** `@niivue/brainchop` is a C11
+reimplementation of MeshNet compiled to WebAssembly with hand-written WGSL
+kernels ([brainchopC](../brainchopC), `js/`). It replaced ~4.0k lines of vendored
+tfjs engine (`inference-logic.js`, `tensor-utils.js`, `bwlabels.js`,
+`brainchop-webworker.js`, `brainchop-parameters.js`, `diagnostic-stats.js`; 4.2k with
+`segment.ts` and `reslice.ts`) plus `@tensorflow/tfjs` and
+`@niivue/nv-ext-image-processing`. Weights are compiled into the module, so
+`public/models/` now holds only `colormap.json`.
 
-**Three divergences from verbatim** (grep `BrowserQC patch` / check git before re-syncing): (0) `enableProductionMode` now **awaits** backend selection and falls back WebGL → tensorflow → cpu (upstream called `tf.setBackend('webgl')` unawaited, racing the `WEBGL_FORCE_F16_TEXTURES` set that follows). Awaiting makes it deterministic and lets non-WebGL hosts run; it also shifted metrics <1.5% vs the pre-patch build (a few boundary voxels). (1) `brainchop-mainthread.js` was **removed** — it was only a redundant main-thread fallback that re-ran the same tfjs/WebGL2 backend after the worker already failed, and its static import dragged a second ~1.6 MB tfjs copy into the segment chunk (now ~11 kB). (2) `brainchop-webworker.js`'s message handler carries a one-line **`BrowserQC patch`**: it `.catch()`es the fire-and-forget `runInferenceWW` and emits the hard-failure UI protocol. Upstream launches it unawaited, so a model-fetch/backend-init rejection became an unhandled *worker* rejection that never reached the host — `segment.ts` `runWorker()` would hang forever and wedge the single-flight queue.
+**It does conform, inference AND back-projection.** `segment()` returns a label
+NIfTI (uint8, `intent_code` 1002) already on the input's own grid, so the whole
+conform → infer → reslice → writeNifti chain collapsed into one call. This is
+why `nv.volumeTransform.conform` and the ext that provided it are gone.
 
-**Three thin TS wrappers** (typed, ours) bridge the engine to our rc.9 NiiVue:
-- [src/brainchop/segment.ts](src/brainchop/segment.ts) — runs the engine in a Web Worker (fast path → seqConv retry; the main-thread fallback was dropped, see above); returns the label volume (`Uint8Array`, labels 0–17) in conformed order.
-- [src/brainchop/reslice.ts](src/brainchop/reslice.ts) — back-projects the conformed labels onto the native grid (majority-vote 2× supersample). Cloned from brainchop-test `resliceLabelsToNative` (its "Segmentation: native space" Save), but the coordinate map is composed from the two volumes' `hdr.affine` directly (`inv(A_conf)·A_native`) because our NiiVue exposes no `mm2vox`/`toRASvox` **methods** on a volume.
-- [src/brainchop/nifti.ts](src/brainchop/nifti.ts) — minimal NIfTI-1 writer. Needed because rc.9 `NVImage` is a plain object with no public factory/`clone`/`saveToDisk`, and the free `nii2volume`/`calculateRAS` helpers aren't exported — so we build a native-grid label `.nii` and `nv.addVolume({url: File})` (the supported path).
+**Feed it `nv.saveVolume(volumes[0])`, not the dropped file** — the one subtlety.
+NiiVue may reorient on load, and the module returns labels on whatever grid it
+was handed. Passing the bytes NiiVue is *displaying* is what keeps the T1 and the
+segmentation geometry-identical for `--qc`, which requires that. It is the same
+argument the old code made by building the label volume from `volumes[0].hdr`;
+`computeQc` serializes `volumes[0]` the same way.
 
-**Flow** (`runSegment(file)` in [src/main.ts](src/main.ts)): `nv.loadVolumes([file])` (display) → `nv.volumeTransform.conform(vol0)` (256³ 1 mm FreeSurfer-canonical, via the [@niivue/nv-ext-image-processing](https://www.npmjs.com/package/@niivue/nv-ext-image-processing) `conform` transform registered once — our rc.9 has no `nv.conform()`) → tfjs inference → `resliceToNative` → `writeNifti` native labels → `addVolume` → `setColormapLabel(idx, colormap.json)` (rc.9 needs `A`+`I` arrays added; label 0 alpha 0) → QC. **The conformed image is never shown** — vol 0 stays the native input, the overlay is native-grid labels (verified on the default 192×256×188 · 0.9 mm `t1_crop`, which is genuinely non-256³ so the reslice does real work). The **Opacity** slider (`#ovlSlider`) drives the overlay's opacity via `nv.setVolume(last, {opacity})`.
+**It is VENDORED, not a dependency, and everything it needs is committed.**
+The package is not published yet, and a `file:../brainchopC/js` dependency
+cannot resolve on a CI runner that checks out only this repository — so
+`npm ci && npm run build` would fail. Instead:
 
-**Version pin gotcha.** The ext is `@niivue/nv-ext-image-processing@1.0.0-rc.10`, which peer-pins NiiVue `rc.10` while we're on `rc.9` — installed with `--legacy-peer-deps` (pinned via [.npmrc](.npmrc)). Safe because the `conform` transform's `apply` is a pure `(hdr,img)→{hdr,img}` worker (deps only `gl-matrix` + `nifti-reader-js`), independent of NiiVue internals. Re-verify on any NiiVue bump.
+- [src/brainchop/](src/brainchop/) — `index.js` (one esbuild bundle) plus the
+  `.d.ts` files. Vite bundles these; `main.ts` imports `./brainchop/index.js`.
+- [public/brainchop/](public/brainchop/) — the emscripten glue and its `.wasm`,
+  served as-is. They are NOT bundled because the glue locates its own `.wasm`
+  through its own `import.meta.url`, so the pair must stay adjacent and
+  unhashed; a bundler would rewrite one and hash the other. `main.ts` points
+  `assetPath` at them. Same class of problem as the niimath/dcm2niix
+  `optimizeDeps.exclude` workaround.
+
+Re-sync with [`npm run syncBrainchop`](scripts/sync-brainchop.mjs) after
+rebuilding the package in `../brainchopC/js` (`BRAINCHOP_JS` overrides the
+path). It is a maintenance tool, deliberately **not** wired into `dev`/`build` —
+those must work from a plain checkout. Only `model16chan18cls` is vendored;
+MindGrab would add 860 KB for a model this app never runs.
+
+**Flow** (`runSegment(file)` in [src/main.ts](src/main.ts)): `nv.loadVolumes([file])`
+(display) → `nv.saveVolume(volumes[0])` → `segment(t1, {model:'16chan18cls'})` →
+`addVolume` → `setColormapLabel(idx, colormap.json)` (rc.9 needs `A`+`I` arrays
+added; label 0 alpha 0) → QC. The overlay is native-grid labels (verified on the
+default 192×256×201 · 0.9 mm `t1_crop`, genuinely non-256³ so the back-projection
+does real work). The **Opacity** slider (`#ovlSlider`) drives the overlay's
+opacity via `nv.setVolume(last, {opacity})`.
+
+**It no longer crops, and that changed the numbers.** The tfjs path ran with
+`enableCrop: true`, which brainchop's own parameter file annotates as *"WebGL2
+fallback only (texture limit); WebGPU runs the full volume."* — model16's
+receptive field is 255 on a 256³ volume, so cropping feeds the large-dilation
+layers mostly zero padding, and upstream states this model family cannot crop.
+The wasm module runs the full volume and refuses `--crop`. **The uncropped result
+is the authoritative one**; that is brainchop's own designation, not a
+preference. Characterized on the default subject (`cli/qc.mjs`, 58 shared numeric
+metrics):
+
+| metric group | Δ | why |
+| --- | --- | --- |
+| air/background (`summary_bg_*`, `fber`, `qi_1`, `efc_brain`, `wm2max`, `snrd_wm`) | **0.00 %** — bit-identical | depend only on the T1 + air mask, not the labels |
+| WM (`summary_wm_*`, `snr_wm`, `vol_wm_mm3`) | 0.2–1.7 % | large confident region, least boundary-sensitive |
+| GM | 1.8–6.3 % | more boundary |
+| CSF (ventricles only, ~18k voxels) | 3–16 % | smallest structure, most boundary-sensitive |
+| `summary_gm_k`, `summary_wm_k` | huge in % | excess kurtosis near zero (0.005 → 0.13); absolute change is 0.13/0.33 — do not read the percentage |
+
+Median |Δ| across all shared metrics is **1.6 %**. End-to-end run time went
+**27.6 s → 6.6 s** (headless Chrome, software WebGPU).
+
+**`.npmrc` is gone.** It existed only to allow `@niivue/nv-ext-image-processing@rc.10`'s peer-pin against our NiiVue rc.9; with the ext removed there is no peer conflict and no `legacy-peer-deps`.
 
 ## QC (niimath `--qc`)
 
@@ -75,13 +134,14 @@ Like `@niivue/dcm2niix`, it's in `optimizeDeps.exclude` ([vite.config.ts](vite.c
 
 ## Deploy
 
+
 Served at [browserqc.org](https://browserqc.org) — a **custom domain** ([public/CNAME](public/CNAME)), so `base: '/'` in [vite.config.ts](vite.config.ts) (root, not a `/repo/` subpath). Still reference bundled assets through `import.meta.env.BASE_URL`, not absolute `/`. The [workflow](.github/workflows/ghpages.yml) (Node 22) runs `test:unit` before `build`, then JamesIves deploys `dist/` (which includes `public/CNAME`) to `gh-pages` — a broken air-metric test blocks deploy. `@niivue/dcm2niix` + `@niivue/niimath` are in `optimizeDeps.exclude` because Vite's prebundler breaks their WASM workers; don't remove that. Anything shipped in `public/` is public: `t1_crop.json` is a **de-identified** fixture (scanner/site/patient identifiers stripped) — keep it minimal.
 
 ## CLI (`cli/qc.mjs`)
 
 `node cli/qc.mjs --in T1.nii[.gz] --out results.json [--bids sidecar.json]` — headless QC, JSON out. Needs `npm run build` and Chrome.
 
-It **drives the real page in headless Chrome** rather than re-implementing the pipeline in Node, so results are the browser's by construction (verified: 38/38 metrics bit-identical, and deterministic run-to-run). That is forced, not stylistic: **MeshNet uses dilated Conv3D (rates up to 31) and no Node backend runs it usefully** — TensorFlow's native CPU kernel rejects dilation > 1 (`CPU Dilation depth must be 1`, so `@tensorflow/tfjs-node` fails outright) and tfjs's pure-JS CPU backend needs ~30 min/volume. Brainchop's own fast path is a bespoke 3.2k-line generated WGSL runner + `model.safetensors` (not tfjs-webgpu), which we deliberately don't vendor.
+It **drives the real page in headless Chrome** rather than re-implementing the pipeline in Node, so results are the browser's by construction (verified: 38/38 metrics bit-identical, and deterministic run-to-run). That is still forced, though the reason changed with the engine: segmentation now needs **WebGPU**, which Node has no implementation of — the wasm module's only backend is `webgpu` and it refuses rather than falling back. (The module does still link a CPU engine, but at 141–266 s/volume single-threaded it is validation-only and the JS package declines to invoke it.)
 
 Two seams: the CLI intercepts the page's request for its bundled default image to inject the input (so the normal auto-run does the work, no CLI special-casing in the app), and `computeQc` publishes `window.browserqcMetrics` at full precision because the panel rounds to 3 s.f.
 
@@ -103,11 +163,11 @@ Then in TS: hat = head-free voxels superior to the plane; artifacts = >10 MADs (
 
 ## Deliberate decisions & known limitations
 
-- **Single-flight liveness (invariant — keep it).** One unsettled job freezes the whole `enqueue`/`pending` chain (spinner stuck until reload), so **every worker-backed step must be time-bounded**: conform + niimath (init+run) + dcm2niix (init+run) via `withTimeout`; brainchop via a per-attempt inactivity watchdog (`WORKER_STALL_MS`). A worker can spawn and then never post back (no message, no `onerror`) — bound any new one you add.
-- **Smoke is wiring-only.** Drives load → conform → segmentation → overlay → `--qc` → panel to completion and fails on any `console.error`/page error, but does **not** assert segmentation or QC *values* (accuracy is brainchop's / niimath's to validate).
+- **Single-flight liveness (invariant — keep it).** One unsettled job freezes the whole `enqueue`/`pending` chain (spinner stuck until reload), so **every worker-backed step must be time-bounded**: brainchop + niimath (init+run) + dcm2niix (init+run) via `withTimeout`. (brainchop's old per-attempt inactivity watchdog went with the tfjs worker; the wasm module is a single awaited call, so plain `withTimeout` covers it.) A worker can spawn and then never post back (no message, no `onerror`) — bound any new one you add.
+- **Smoke is wiring-only.** Drives load → segmentation → overlay → `--qc` → panel to completion and fails on any `console.error`/page error, but does **not** assert segmentation or QC *values* (accuracy is brainchop's / niimath's to validate).
 - **Tissue-label grouping is a judgement call.** WM = cerebral + cerebellar white matter (`[1,5]`); brainstem/VentralDC/deep-GM fall into GM. Fine for a relative CJV/CNR/SNR estimator; widen `WM_LABELS`/`CSF_LABELS` in [src/qc.ts](src/qc.ts) if needed. `--qc --erode` defaults to 1 (not exposed in the UI).
-- **Back-projection runs on the UI thread** ([src/brainchop/reslice.ts](src/brainchop/reslice.ts), 8 samples/voxel, synchronous). Fine for the bundled image; may block paint on large DICOM. Profile real DICOM before moving it to a worker or dropping to single-sample nearest-neighbour — don't add voxel-limit preflight checks.
 - **HMR dev-only limitation.** An already-running inference/conversion finishes after `cleanup()`; the execution-time + `runSegment`-entry `isCleanedUp` guards keep it from touching a destroyed NiiVue. Not worth cross-pipeline cancellation.
 - **CLI error gate.** `cli/qc.mjs` fails (exit 1, no output written) on any page/console error — the app is expected to run clean (the smoke gates on the same signal), so a page error means the result may be wrong.
 - **`junk.nii` in MEMFS (accepted).** The air `-allineate -savemat` pass must write a resliced image we don't read; the worker's cleanup only unlinks `outName` (`xf.json`). It's one small file (template grid) overwritten each run — bounded, not worth a vendored-worker edit.
 - **dcm2niix sidecars not auto-paired.** `runDcm2niix` drops generated `.json`. A user-dropped sidecar is retained only when conversion yields one series; multi-series selection omits `bids_meta` because one sidecar cannot be paired safely. The CLI accepts an explicit `--bids`. Per-series pairing is a deferred enhancement (untested against real DICOM).
+- **`shader-f16`-less GPU shows a technical message.** A GPU where NiiVue attaches (WebGPU renders) but brainchop's `acquireDevice()` fails (`no-f16` / device too small) surfaces the raw `BrainchopError` as `Failed: <code>` via the enqueue catch — graceful (no crash), but not the friendly "needs WebGPU" text (that only covers the NiiVue-attach path). Mapping `BrainchopError.code` → friendly text is a deferred nicety.

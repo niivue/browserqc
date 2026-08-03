@@ -4,7 +4,7 @@
 // with WebGPU via SwiftShader (the recipe niivue's own e2e suite uses:
 // --use-gl=angle --enable-unsafe-swiftshader), and asserts the full auto-run path
 // that node smoke can't reach: WebGPU/NiiVue attach, Vite worker URLs, the default
-// image load → conform → tfjs "Subcortical + GWM" segmentation (WebGL2) →
+// image load → "Subcortical + GWM" segmentation (WebGPU wasm) →
 // native-space overlay → niimath --qc → QC panel populated, the Opacity slider, and
 // that nothing throws to the page / logs to console.error.
 //
@@ -110,10 +110,10 @@ try {
   if (!(await qcText()).includes('No QC values')) await fail('QC panel not empty on load', page)
 
   // 2. The app auto-runs on load: NiiVue attaches, the default image loads, then
-  // conform → tfjs "Subcortical + GWM" segmentation (WebGL2) → native-space overlay →
+  // "Subcortical + GWM" segmentation (WebGPU wasm) → native-space overlay →
   // niimath --qc. The terminal status is set only after the overlay is added, colored,
   // AND the parsed QC lands in the panel — so reaching it proves the whole path ran.
-  // tfjs runs on the SwiftShader WebGL2 backend here (~15 s). Wiring-only: it asserts
+  // The wasm module runs on the SwiftShader WebGPU backend here. Wiring-only: it asserts
   // the path runs clean and the panel populates, not the segmentation/QC *values*.
   await page.waitForFunction(
     () => /Segmentation \+ QC complete|QC unavailable/.test(document.getElementById('statusMsg')?.textContent || ''),

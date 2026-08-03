@@ -7,10 +7,10 @@
  *
  * This drives the actual BrowserQC page in headless Chrome rather than
  * re-implementing the pipeline in Node, so the numbers are the browser's by
- * construction. That is not just convenience: MeshNet uses dilated Conv3D (rates up
- * to 31), and there is no Node backend that can execute it usefully — TensorFlow's
- * native CPU kernel rejects dilation > 1 ("CPU Dilation depth must be 1"), and the
- * pure-JS CPU backend needs ~30 min/volume. The browser's WebGL2 path handles it.
+ * construction. That is not just convenience: segmentation needs WebGPU, which Node
+ * has no implementation of. The wasm module's only backend is `webgpu` and it
+ * refuses rather than silently falling back to its (validation-only, minutes-per-
+ * volume) CPU engine.
  *
  * The input is injected by intercepting the page's request for its bundled default
  * image, so the app's normal auto-run does all the work and no app code is special-
@@ -107,7 +107,7 @@ try {
   page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()) })
 
   // Serve OUR file wherever the app asks for its bundled default image, so the
-  // standard startup auto-run (conform → segment → overlay → --qc) processes it.
+  // standard startup auto-run (segment → overlay → --qc) processes it.
   await page.route('**/t1_crop.nii.gz', (route) =>
     route.fulfill({ status: 200, contentType: 'application/gzip', body: inputBytes }),
   )
@@ -124,7 +124,7 @@ try {
     await page.addInitScript((m) => { window.__browserqcBids = m }, meta)
   }
   await page.goto(URL_BASE, { waitUntil: 'domcontentloaded' })
-  log('running    conform → segmentation → niimath --qc (headless Chrome)…')
+  log('running    segmentation → niimath --qc (headless Chrome)…')
 
   // NB: waitForFunction(fn, arg, options) — the options object must be the THIRD
   // argument; passing it second silently falls back to Playwright's 30 s default.

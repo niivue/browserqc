@@ -2,9 +2,11 @@
  * Minimal NIfTI-1 single-file writer: a typed voxel array + geometry → .nii bytes.
  *
  * ponytail: only the header fields NiiVue needs to load a volume and place it in
- * world space (dims, datatype, pixdim, sform/srow, intent). Not a general writer —
- * we build exactly one thing with it: the native-grid segmentation overlay, whose
- * geometry we copy verbatim from the already-loaded input volume. Correctness is
+ * world space (dims, datatype, pixdim, sform/srow). Not a general writer — we
+ * build exactly one thing with it: the air-mask overlay on the RAS grid. (It
+ * also wrote the segmentation overlay until @niivue/brainchop started returning
+ * a complete NIfTI itself; the label-map intent and the Int16/Float32 branches
+ * went with that caller.) Correctness is
  * exercised end-to-end (a malformed header makes NiiVue's addVolume throw, which
  * the e2e smoke's console-error gate catches).
  */
@@ -18,28 +20,9 @@ export type NiftiGeom = {
 const HDR_SIZE = 348
 const VOX_OFFSET = 352 // 348 header + 4-byte extension flag
 
-/** NIFTI_INTENT_LABEL — tags the volume as a discrete label map. */
-export const INTENT_LABEL = 1002
-
-export function writeNifti(
-  geom: NiftiGeom,
-  img: Uint8Array | Int16Array | Float32Array,
-  intentCode = 0,
-): Uint8Array {
-  let datatype: number
-  let bitpix: number
-  if (img instanceof Uint8Array) {
-    datatype = 2 // DT_UINT8
-    bitpix = 8
-  } else if (img instanceof Int16Array) {
-    datatype = 4 // DT_INT16
-    bitpix = 16
-  } else if (img instanceof Float32Array) {
-    datatype = 16 // DT_FLOAT32
-    bitpix = 32
-  } else {
-    throw new Error('writeNifti: unsupported array type')
-  }
+export function writeNifti(geom: NiftiGeom, img: Uint8Array): Uint8Array {
+  const datatype = 2 // DT_UINT8 — the one caller writes a binary air mask
+  const bitpix = 8
 
   const nx = geom.dims[1]
   const ny = geom.dims[2]
@@ -58,7 +41,6 @@ export function writeNifti(
   dv.setInt16(50, 1, LE)
   dv.setInt16(52, 1, LE)
   dv.setInt16(54, 1, LE)
-  dv.setInt16(68, intentCode, LE) // intent_code
   dv.setInt16(70, datatype, LE)
   dv.setInt16(72, bitpix, LE)
   dv.setFloat32(76, geom.pixDims[0] || 1, LE) // pixdim[0] = qfac

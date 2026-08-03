@@ -6,11 +6,10 @@ Live demo: [browserqc.org](https://browserqc.org).
 
 ## How it works
 
-Everything runs in WebAssembly + WebGPU/WebGL2 on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
+Everything runs in WebAssembly + WebGPU on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
 
-1. **Conform** — the scan is resampled to the model's canonical 256³ 1 mm space ([@niivue/nv-ext-image-processing](https://www.npmjs.com/package/@niivue/nv-ext-image-processing)).
-2. **Segment** — a [brainchop](https://github.com/neuroneural/brainchop) deep-learning model (`model16chan18cls`, "Subcortical + GWM") running in [TensorFlow.js](https://www.tensorflow.org/js) parcellates the brain into 17 gray/white-matter and subcortical regions.
-3. **Back-project** — the labels are resliced onto the native input grid and drawn as a colour overlay on the original scan (adjust with the **Opacity** slider).
+1. **Segment** — the vendored [`@niivue/brainchop`](https://github.com/neuroneural/brainchopC) runs the [brainchop](https://github.com/neuroneural/brainchop) `model16chan18cls` ("Subcortical + GWM") model on WebGPU, parcellating the brain into 17 gray/white-matter and subcortical regions. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module.
+2. **Back-project** — the labels are resliced onto the native input grid and drawn as a colour overlay on the original scan (adjust with the **Opacity** slider).
 4. **Quality control** — [niimath](https://github.com/rordenlab/niimath) computes MRIQC-style anatomical image-quality metrics from the scan and its segmentation, shown in the side panel:
    - **CJV** — coefficient of joint variation (noise + intensity non-uniformity); lower is better
    - **CNR** — contrast-to-noise (GM vs WM, over tissue + air noise); higher is better
@@ -28,6 +27,12 @@ Metric names and definitions follow [MRIQC](https://mriqc.readthedocs.io/en/late
 > This is a fast **approximation** of MRIQC, not a reimplementation: it uses a hard deep-learning parcellation rather than FSL-FAST partial-volume maps, and raw intensities rather than an N4-bias-corrected image. Expect the same ballpark and the same ranking, not the same numbers — validated against MRIQC, `snrd_*` land within ~10 % while background *levels* and `icvs_csf` differ systematically. Not a substitute for MRIQC's normative values.
 
 ## Develop
+
+The segmentation engine is **vendored** (`src/brainchop/`, `public/brainchop/`)
+and committed, so a plain clone builds with no other checkout. To pick up a new
+build of it: `cd ../brainchopC/js && npm install && npm run build`, then
+`npm run syncBrainchop` here, and commit what changes.
+
 
 Requires **Node ≥ 22** (`npm run test:unit` imports the TypeScript sources directly via Node's type stripping).
 
@@ -55,7 +60,7 @@ Requires a browser with WebGPU (recent desktop Chrome, Edge, or Safari).
 
 ## License
 
-**BSD-2-Clause.** niimath comes from the [`@niivue/niimath`](https://www.npmjs.com/package/@niivue/niimath) npm package (BSD-2). The brainchop tfjs inference engine is vendored under [src/brainchop/](src/brainchop/).
+**BSD-2-Clause.** niimath comes from the [`@niivue/niimath`](https://www.npmjs.com/package/@niivue/niimath) npm package (BSD-2). Segmentation comes from the vendored [`@niivue/brainchop`](https://github.com/neuroneural/brainchopC) package (BSD-2), a C11 MeshNet reimplementation compiled to WebAssembly + WGSL.
 
 ## Links
 

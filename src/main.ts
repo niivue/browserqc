@@ -1,11 +1,11 @@
 /**
  * BrowserQC — browser-only MRI quality control. No data leaves the machine.
  *
- * Drop a NIfTI (or a DICOM folder → dcm2niix) and it runs automatically: conform to
- * the model's canonical space, run the brainchop "Subcortical + GWM" parcellation
- * (TensorFlow.js), back-project the labels onto the native scan as a colour overlay,
- * then compute niimath MRIQC-style quality metrics into the side panel. Everything
- * runs in WebAssembly + WebGPU/WebGL2 locally.
+ * Drop a NIfTI (or a DICOM folder → dcm2niix) and it runs automatically: run the
+ * brainchop "Subcortical + GWM" parcellation via @niivue/brainchop (which does
+ * conform, inference and back-projection inside its wasm module), overlay the
+ * native-grid labels, then compute niimath MRIQC-style quality metrics into the
+ * side panel. Everything runs in WebAssembly + WebGPU locally.
  */
 
 import NiiVueGPU, {
@@ -92,11 +92,11 @@ niimath.setOutputDataType('input')
 const listeners = new AbortController()
 const ac = { signal: listeners.signal }
 
-// Bound worker-backed steps (conform, niimath init + run). A worker that spawns but
-// never posts back (no message, no onerror) never settles its promise, so the
-// single-flight `pending` chain never advances and the app wedges (spinner stuck)
-// until reload. A timeout rejects instead so the queue moves on. Generous — these
-// finish in seconds; this only fires on a genuine stall.
+// Bound every long WASM/WebGPU step (brainchop segmentation — a main-thread WebGPU
+// call — plus niimath init + run in its worker). If one never settles (a hung worker,
+// a lost GPU device), the single-flight `pending` chain never advances and the app
+// wedges (spinner stuck) until reload. A timeout rejects instead so the queue moves
+// on. Generous — these finish in seconds; this only fires on a genuine stall.
 const WORKER_TIMEOUT_MS = 60_000
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -176,21 +176,14 @@ async function fetchFile(url: string, name: string): Promise<File> {
   return new File([await res.blob()], name)
 }
 
-// --- Segmentation ("Subcortical + GWM", brainchop tfjs) ---
-// Runs automatically on every loaded image. Conforms a copy to 256³ 1 mm, runs the
-// deep-learning parcellation, back-projects the labels onto the native input grid
-// (so the overlay sits on the ORIGINAL scan), colours them, then runs QC. tfjs + the
-// model chunk are dynamically import()ed on first use.
-let conformRegistered = false
-
-async function ensureConformTransform(): Promise<void> {
-  if (conformRegistered) return
-  // FastSurfer-style conform (256³ 1 mm) as a NiiVue volume transform — our rc.9
-  // NiiVue has no nv.conform(), so we register the ext's worker-backed transform.
-  const { conform } = await import('@niivue/nv-ext-image-processing')
-  nv.registerVolumeTransform(conform)
-  conformRegistered = true
-}
+// --- Segmentation ("Subcortical + GWM", @niivue/brainchop on WebGPU) ---
+// Runs automatically on every loaded image, and is now a single call: the wasm
+// module owns conform → parcellation → back-projection, and hands back a label
+// NIfTI already on the input's own grid. The module is import()ed on first use.
+//
+// The colormap stays a served asset rather than coming from the package: it is
+// 608 bytes and NiiVue wants it in its own ColorMap shape anyway.
+const SEG_COLORMAP = 'models/model16chan18cls/colormap.json'
 
 // colormap.json ({R,G,B,labels}) → NiiVue ColorMap. rc.9 also needs I (label value
 // per entry) and A (alpha) — background label 0 transparent, the rest opaque.
@@ -268,7 +261,7 @@ async function computeAirQc(
   worker: Worker,
 ): Promise<{ metrics: Record<string, number>; hatFile: File }> {
   const { readNii, mul4, computeAirMetrics } = await import('./qc-air')
-  const { writeNifti } = await import('./brainchop/nifti')
+  const { writeNifti } = await import('./nifti')
   // The outer timeout resets the shared worker. If it fired while these imports were
   // loading, this abandoned continuation must not acquire the replacement worker.
   if (worker !== niimathWorker()) throw new Error('air metrics cancelled')
@@ -319,13 +312,12 @@ async function addHatOverlay(hatFile: File): Promise<void> {
   if (hatToggle.checked) nv.setVolume(hatIndex, { opacity: HAT_OPACITY })
 }
 
-// MRIQC-style QC on the native input + the native-space segmentation. The T1 is
-// serialized straight from NiiVue (volumes[0]) so it shares the exact grid of the
-// segmentation we built from that same volume — `--qc` requires identical geometry.
-async function computeQc(segBytes: Uint8Array): Promise<void> {
+// MRIQC-style QC on the native input + the native-space segmentation. `t1` is the
+// SAME serialization runSegment fed to the segmenter, passed in rather than taken
+// again — that is what makes the identical geometry `--qc` requires true by
+// construction rather than by two call sites agreeing.
+async function computeQc(segBytes: Uint8Array, t1: Uint8Array): Promise<void> {
   await ensureNiimath()
-  const t1 = await nv.saveVolume({ volumeByIndex: 0, filename: '' })
-  if (!(t1 instanceof Uint8Array)) throw new Error('could not serialize the input volume')
   // Both inputs are uncompressed .nii (saveVolume with an empty filename does not gzip;
   // writeNifti emits raw) — no gunzip cost, and `--qc` writes a TSV so output gz never
   // applies. Name matches content so niimath doesn't attempt a gunzip.
@@ -379,43 +371,41 @@ async function runSegment(file: File): Promise<void> {
   renderQc(qcBody, null) // clear any prior QC while we recompute
   const t0 = performance.now()
   try {
-    await ensureConformTransform()
     setStatus(`Loading ${file.name}…`)
     await nv.loadVolumes([{ url: file, name: file.name } as ImageFromUrlOptions])
     if (isCleanedUp) return
-    const nativeVol = nv.volumes[0]
-
-    // Conform to the model's canonical 256³ 1 mm space.
-    setStatus('Conforming input (256³ 1 mm)…')
-    const conf = await withTimeout(nv.volumeTransform.conform(nativeVol), WORKER_TIMEOUT_MS, 'conform')
-    if (isCleanedUp || !conf.img) return
 
     setStatus('Segmenting (Subcortical + GWM)… first run downloads the model')
-    const { segment, segColormapUrl } = await import('./brainchop/segment')
-    const rootURL = new URL(import.meta.env.BASE_URL, window.location.href).href.replace(/\/$/, '')
-    const labels = await segment(
-      { dims: conf.hdr.dims, datatypeCode: conf.hdr.datatypeCode },
-      conf.img,
-      rootURL,
-      (m) => setStatus(m),
+    const { segment } = await import('./brainchop/index.js')
+    if (isCleanedUp) return // teardown may have run during the dynamic import
+    // Segment the bytes NiiVue is DISPLAYING, not the dropped file. NiiVue may
+    // reorient on load, and the module returns labels on whatever grid it was
+    // given — so this is what keeps the pair geometry-identical for `--qc`,
+    // which is the same argument the old hand-rolled reslice made by copying
+    // volumes[0]'s header. computeQc serializes volumes[0] the same way.
+    const t1 = await nv.saveVolume({ volumeByIndex: 0, filename: '' })
+    if (!(t1 instanceof Uint8Array)) throw new Error('could not serialize the input volume')
+    const seg = await withTimeout(
+      segment(t1, {
+        model: '16chan18cls',
+        // The glue and its .wasm are served from public/brainchop/, committed
+        // there because a bundler cannot carry them: the glue finds its own
+        // .wasm through its own import.meta.url, so the pair must stay adjacent
+        // and unhashed. scripts/sync-brainchop.mjs refreshes both.
+        assetPath: `${import.meta.env.BASE_URL}brainchop/`,
+        // Bound the module on the SAME clock as our withTimeout (its own default is
+        // 120 s). On a GPU-loss stall both fire together, so the abandoned run tears
+        // itself down instead of holding a GPUDevice while a new drop starts a second.
+        timeoutMs: WORKER_TIMEOUT_MS,
+        onLog: (l) => console.debug('brainchop:', l),
+      }),
+      WORKER_TIMEOUT_MS,
+      'segmentation',
     )
-    if (isCleanedUp) return
-
-    // Back-project conformed labels onto the native grid (input resolution).
-    setStatus('Back-projecting to native space…')
-    const { resliceToNative } = await import('./brainchop/reslice')
-    const nativeLabels = resliceToNative(
-      { dims: nativeVol.hdr.dims, affine: nativeVol.hdr.affine },
-      { dims: conf.hdr.dims, affine: conf.hdr.affine },
-      labels,
-    )
-    const { writeNifti, INTENT_LABEL } = await import('./brainchop/nifti')
-    const bytes = writeNifti(
-      { dims: nativeVol.hdr.dims, pixDims: nativeVol.hdr.pixDims, affine: nativeVol.hdr.affine },
-      nativeLabels,
-      INTENT_LABEL,
-    )
-    if (isCleanedUp) return // teardown may have run during the reslice/nifti imports
+    // Already a label NIfTI (uint8, intent 1002) on the input grid: no reslice,
+    // no header to write. The module did both.
+    const bytes = new Uint8Array(seg.image)
+    if (isCleanedUp) return // teardown may have run during the segmentation
     await nv.addVolume({
       url: new File([bytes], 'segmentation.nii'),
       name: 'segmentation.nii',
@@ -424,7 +414,7 @@ async function runSegment(file: File): Promise<void> {
     if (isCleanedUp) return
     segIndex = nv.volumes.length - 1 // fixed handle: the air overlay is added on top later
 
-    const cmapRes = await fetch(segColormapUrl(rootURL))
+    const cmapRes = await fetch(`${import.meta.env.BASE_URL}${SEG_COLORMAP}`)
     if (!cmapRes.ok) throw new Error(`fetch colormap failed: ${cmapRes.status}`)
     const cmap = await cmapRes.json()
     await nv.setColormapLabel(segIndex, toColorMap(cmap))
@@ -440,7 +430,7 @@ async function runSegment(file: File): Promise<void> {
     // display — reset the worker, surface it in the status bar, leave the panel empty.
     try {
       setStatus('Computing image-quality metrics (niimath)…')
-      await computeQc(bytes)
+      await computeQc(bytes, t1)
       if (isCleanedUp) return
       setStatus(`Segmentation + QC complete (${Math.round(performance.now() - t0)} ms)`)
     } catch (err) {

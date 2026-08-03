@@ -25,10 +25,12 @@ export type QcMetrics = Record<string, number>
  * geometry, an optional BIDS sidecar (`bids_meta`, as dcm2niix emits) and provenance.
  * Mirrors the layout of MRIQC's `<sub>_T1w.json` so the two can be diffed directly.
  *
- * Naming follows MRIQC where the definition matches. It deliberately does NOT: our
- * `cnr_noair` omits MRIQC's air term (see niimath qc.c) and our `efc_brain` is
- * computed over non-zero voxels, so calling them `cnr`/`efc` would imply a
- * comparability that does not hold.
+ * Naming follows MRIQC where the definition matches. `cnr` carries the air term (the
+ * air step computes it and supersedes niimath's air-free `cnr_noair`, which only
+ * survives as a fallback when that step is skipped) — but like the rest it is still an
+ * approximation, not normatively comparable (different segmentation + no INU
+ * correction). `efc_brain` keeps our name because it is computed over non-zero voxels,
+ * not MRIQC's framed extent.
  */
 export type QcReport = Record<string, unknown>
 
