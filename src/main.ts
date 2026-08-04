@@ -530,25 +530,28 @@ async function handleDrop(filesPromise: Promise<File[]>): Promise<void> {
 
 // --- Init ---
 async function init(): Promise<void> {
-  // NiiVue's attachTo() acquires a WebGPU device and throws without one. But
-  // navigator.gpu can exist while requestAdapter() returns null, device creation
-  // fails, or the GPU is blocklisted — so guard the fast case AND catch attachTo()
-  // failures, giving a friendly message instead of an unhandled console.error in
-  // every WebGPU-unavailable path.
-  const noWebGpu =
-    'This browser/GPU can’t initialize WebGPU — BrowserQC needs a recent desktop Chrome, Edge, or Safari.'
-  if (!navigator.gpu) {
-    setStatus(noWebGpu)
-    return
-  }
+  /*
+   * NO navigator.gpu GUARD. The default `@niivue/niivue` build carries BOTH
+   * renderers and falls back to WebGL2 when WebGPU is unavailable, and
+   * @niivue/brainchop does the same for the segmentation — so a browser without
+   * WebGPU can run this page end to end. An early return on !navigator.gpu
+   * refused it before either fallback was ever consulted, which is what made
+   * Linux Firefox show a "needs WebGPU" message on a machine that can render
+   * and segment perfectly well.
+   *
+   * The try/catch stays: navigator.gpu can exist while requestAdapter returns
+   * null or the GPU is blocklisted, and attachTo() can still fail for reasons no
+   * fallback covers. That is a real failure and gets a real message.
+   */
   try {
     await attachNiiVue()
   } catch (err) {
-    // Almost always genuine WebGPU unavailability; warn (not error, so the smoke's
-    // console.error gate stays meaningful) so a non-WebGPU init bug isn't silently
-    // mislabeled.
-    console.warn('BrowserQC: WebGPU init failed', err)
-    setStatus(noWebGpu)
+    // warn, not error, so the smoke test's console.error gate stays meaningful.
+    console.warn('BrowserQC: renderer init failed', err)
+    setStatus(
+      'This browser/GPU can’t initialize either WebGPU or WebGL2 — BrowserQC ' +
+      'needs a reasonably recent desktop browser.',
+    )
     return
   }
   // Load + segment the bundled default subject, with its BIDS sidecar as bids_meta.
