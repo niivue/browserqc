@@ -346,9 +346,6 @@ var MODELS = {
     }
   }
 };
-function listModels() {
-  return Object.values(MODELS);
-}
 function reject(model, option, why) {
   throw new BrainchopError(
     "unsupported-option",
@@ -528,17 +525,33 @@ async function segment(input, options) {
   if (mask) segmented.mask = await pack(mask);
   return segmented;
 }
-export {
-  ACTIVATION_BYTES,
-  BrainchopError,
-  GL_ACTIVATION_BYTES,
-  MODELS,
-  acquireDevice,
-  acquireGlContext,
-  checkSupport,
-  checkWebgl2Support,
-  listModels,
-  releaseGlContext,
-  segment
+
+// src/worker.ts
+self.onmessage = async (event) => {
+  const post = (message, transfer = []) => self.postMessage(message, transfer);
+  try {
+    const result = await segment(event.data.input, {
+      ...event.data.options,
+      // Logs cannot be a callback across the boundary, so they are streamed.
+      onLog: (line) => post({ type: "log", line })
+    });
+    const transfer = [result.image];
+    if (result.mask) transfer.push(result.mask);
+    post({
+      type: "done",
+      image: result.image,
+      mask: result.mask,
+      elapsedMs: result.elapsedMs,
+      backend: result.backend
+    }, transfer);
+  } catch (error) {
+    const e = error;
+    post({
+      type: "error",
+      code: e && e.code || "inference-failed",
+      message: e && e.message || String(error),
+      log: e && e.log
+    });
+  }
 };
-//# sourceMappingURL=index.js.map
+//# sourceMappingURL=worker.js.map

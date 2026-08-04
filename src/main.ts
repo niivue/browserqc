@@ -70,6 +70,7 @@ async function attachNiiVue(): Promise<void> {
   nv.sliceType = SLICE_TYPE.MULTIPLANAR
   nv.showRender = SHOW_RENDER.ALWAYS
   nv.crosshairGap = 5
+  nv.meshXRay = 0.05 // let the crosshairs show through the volume in the render view
   nv.isLegendVisible = false
   ctx = nv.createExtensionContext()
   ctx.on('locationChange', (e) => {
@@ -377,6 +378,15 @@ async function runSegment(file: File): Promise<void> {
 
     setStatus('Segmenting (Subcortical + GWM)… first run downloads the model')
     const { segment } = await import('./brainchop/index.js')
+    /*
+     * `?backend=webgl2` forces the fallback, and without it the fallback is
+     * effectively untestable here. brainchop picks WebGPU wherever it exists,
+     * so on any machine that can run BrowserQC at all the WebGL2 path would
+     * never execute -- a test that passes while testing nothing. `?backend=`
+     * accepts only the two known names; anything else falls through to auto.
+     */
+    const wanted = new URLSearchParams(location.search).get('backend')
+    const backend = wanted === 'webgl2' || wanted === 'webgpu' ? wanted : undefined
     if (isCleanedUp) return // teardown may have run during the dynamic import
     // Segment the bytes NiiVue is DISPLAYING, not the dropped file. NiiVue may
     // reorient on load, and the module returns labels on whatever grid it was
@@ -393,6 +403,15 @@ async function runSegment(file: File): Promise<void> {
         // .wasm through its own import.meta.url, so the pair must stay adjacent
         // and unhashed. scripts/sync-brainchop.mjs refreshes both.
         assetPath: `${import.meta.env.BASE_URL}brainchop/`,
+        backend,
+        // In a Worker, which is what keeps this page usable while it runs.
+        // Measured with a rAF ticker: in-thread the WebGL2 fallback draws 3
+        // frames and stalls for 2171 ms of a 2196 ms run, and even WebGPU
+        // stalls 258 ms on the CPU stages (conform, bwlabel, gzip) that no
+        // amount of ASYNCIFY moves. In a worker both are 0 ms. It also makes
+        // the timeout a real cancellation: terminate() stops the work, where
+        // an in-thread timeout can only stop waiting for it.
+        worker: true,
         // Bound the module on the SAME clock as our withTimeout (its own default is
         // 120 s). On a GPU-loss stall both fire together, so the abandoned run tears
         // itself down instead of holding a GPUDevice while a new drop starts a second.
@@ -402,6 +421,12 @@ async function runSegment(file: File): Promise<void> {
       WORKER_TIMEOUT_MS,
       'segmentation',
     )
+    // Which backend ran, in the UI and not only in the console: the point of
+    // `?backend=webgl2` is to confirm the fallback executed, and a silent
+    // fall-through to WebGPU would look exactly like success.
+    console.info(`brainchop: ${seg.backend}, ${Math.round(seg.elapsedMs)} ms` +
+      `${seg.ranInWorker ? ' (worker)' : ''}`)
+    if (backend) setStatus(`Segmented on ${seg.backend}…`)
     // Already a label NIfTI (uint8, intent 1002) on the input grid: no reslice,
     // no header to write. The module did both.
     const bytes = new Uint8Array(seg.image)

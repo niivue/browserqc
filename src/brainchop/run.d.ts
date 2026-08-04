@@ -1,7 +1,11 @@
-import type { ModelName } from './types.js';
+import type { Backend, ModelName } from './types.js';
 export interface RunRequest {
     model: ModelName;
-    device: GPUDevice;
+    backend: Backend;
+    /** Required for the webgpu backend. */
+    device?: GPUDevice;
+    /** Required for the webgl2 backend. */
+    glContext?: WebGL2RenderingContext;
     input: Uint8Array;
     /** CLI arguments, excluding the input path and `-o`. */
     args: string[];
