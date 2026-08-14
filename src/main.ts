@@ -2,10 +2,10 @@
  * BrowserQC — browser-only MRI quality control. No data leaves the machine.
  *
  * Drop a NIfTI (or a DICOM folder → dcm2niix) and it runs automatically: run the
- * brainchop "Subcortical + GWM" parcellation via @niivue/brainchop (which does
+ * brainchop "Subcortical + GWM" parcellation via @brainchop/mindgrab (which does
  * conform, inference and back-projection inside its wasm module), overlay the
  * native-grid labels, then compute niimath MRIQC-style quality metrics into the
- * side panel. Everything runs in WebAssembly + WebGPU locally.
+ * side panel. Everything runs locally in WebAssembly + WebGPU (WebGL2 fallback).
  */
 
 import NiiVueGPU, {
@@ -19,6 +19,8 @@ import { runDcm2niix, traverseDataTransferItems } from './dcm2niix/index'
 import { Niimath } from '@niivue/niimath'
 import { CSF_LABELS, WM_LABELS, bindSidecar, buildQcReport, parseQcTsv, renderQc } from './qc'
 import type { QcReport } from './qc'
+import { computeAirMetrics, mul4, readNii } from './qc-air'
+import { writeNifti } from './nifti'
 
 const T1_URL = `${import.meta.env.BASE_URL}t1_crop.nii.gz`
 
@@ -56,13 +58,11 @@ let stagedSidecar: unknown = null // a .json dropped alone, applied to the next 
 let lastName = 'image'
 
 // --- NiiVue setup ---
-// The NiiVue constructor is GPU-free; attachTo() acquires the WebGPU device and
-// throws on a browser without it. So construct here but defer attachTo to init(),
-// AFTER the navigator.gpu guard, or a no-WebGPU browser gets an unhandled
-// top-level rejection instead of the friendly "needs WebGPU" message.
+// The NiiVue constructor is GPU-free; attachTo() acquires the device (WebGPU, else
+// WebGL2) and throws when neither is available. So construct here but defer attachTo
+// to init(), where it is try/caught — otherwise such a browser gets an unhandled
+// top-level rejection instead of the friendly message.
 const nv = new NiiVueGPU({ isDragDropEnabled: false, backgroundColor: [0, 0, 0, 1] })
-type ExtCtx = ReturnType<typeof nv.createExtensionContext>
-let ctx: ExtCtx | null = null
 
 async function attachNiiVue(): Promise<void> {
   await nv.attachTo('gl1')
@@ -72,10 +72,9 @@ async function attachNiiVue(): Promise<void> {
   nv.crosshairGap = 5
   nv.meshXRay = 0.05 // let the crosshairs show through the volume in the render view
   nv.isLegendVisible = false
-  ctx = nv.createExtensionContext()
-  ctx.on('locationChange', (e) => {
+  nv.addEventListener('locationChange', (e) => {
     locationEl.textContent = e.detail.string
-  })
+  }, ac)
 }
 
 // --- App state ---
@@ -88,13 +87,12 @@ let busy = false
 // niimath is used only for the QC metrics (`--qc`); lazily initialised on first QC.
 const niimath = new Niimath()
 let niimathReady: Promise<void> | null = null
-niimath.setOutputDataType('input')
 
 const listeners = new AbortController()
 const ac = { signal: listeners.signal }
 
-// Bound every long WASM/WebGPU step (brainchop segmentation — a main-thread WebGPU
-// call — plus niimath init + run in its worker). If one never settles (a hung worker,
+// Bound every long WASM/GPU step (brainchop segmentation in its worker, plus
+// niimath init + run in its worker). If one never settles (a hung worker,
 // a lost GPU device), the single-flight `pending` chain never advances and the app
 // wedges (spinner stuck) until reload. A timeout rejects instead so the queue moves
 // on. Generous — these finish in seconds; this only fires on a genuine stall.
@@ -109,21 +107,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   })
 }
 
-// The vendored niimath wrapper exposes no public accessor for its Web Worker, so we
-// reach the private field (verified named `worker`, @niivue/niimath core) for the raw
-// --qc post, worker recovery, and teardown. Centralised here so a wrapper rename
-// fails in ONE place — ensureNiimath() asserts the handle is real after init(), so a
-// bump fails loudly at the seam instead of silently disabling QC + leaking the worker.
+// The @niivue/niimath wrapper exposes no public accessor for its Web Worker, so we
+// reach the private field (verified named `worker`) to post raw jobs to it.
+// Centralised here so a wrapper rename fails in ONE place — ensureNiimath() asserts
+// the handle is real after init(), so a bump fails loudly at the seam instead of
+// silently disabling QC.
 function niimathWorker(): Worker | null {
   return (niimath as unknown as { worker?: Worker | null }).worker ?? null
-}
-function killNiimathWorker(): void {
-  try {
-    niimathWorker()?.terminate()
-    ;(niimath as unknown as { worker: Worker | null }).worker = null
-  } catch {
-    // worker may already be gone
-  }
 }
 
 // --- Status helpers ---
@@ -158,16 +148,18 @@ async function ensureNiimath(): Promise<void> {
   if (!niimathReady)
     niimathReady = niimath.init().then(() => {
       if (!(niimathWorker() instanceof Worker))
-        throw new Error('niimath worker handle missing after init (vendored wrapper changed?)')
+        throw new Error('niimath worker handle missing after init (wrapper changed?)')
     })
   await withTimeout(niimathReady, WORKER_TIMEOUT_MS, 'niimath init')
 }
 
 // If a niimath run fails, its worker + init promise may be in a bad state; tear both
-// down so the next QC spins up a fresh worker. (The vendored wrapper exposes no public
-// terminate — killNiimathWorker reaches the private field for us.)
+// down so the next QC spins up a fresh worker. dispose() is the wrapper's own teardown
+// (terminates, clears its ready flag, rejects an in-flight init/run). It does NOT
+// settle our raw posts — the wrapper never sees those — so those stay covered by
+// withTimeout.
 function resetNiimathWorker(): void {
-  killNiimathWorker()
+  niimath.dispose('niimath worker reset')
   niimathReady = null
 }
 
@@ -177,36 +169,31 @@ async function fetchFile(url: string, name: string): Promise<File> {
   return new File([await res.blob()], name)
 }
 
-// --- Segmentation ("Subcortical + GWM", @niivue/brainchop on WebGPU) ---
+// --- Segmentation ("Subcortical + GWM", @brainchop/mindgrab on WebGPU/WebGL2) ---
 // Runs automatically on every loaded image, and is now a single call: the wasm
 // module owns conform → parcellation → back-projection, and hands back a label
 // NIfTI already on the input's own grid. The module is import()ed on first use.
-//
-// The colormap stays a served asset rather than coming from the package: it is
-// 608 bytes and NiiVue wants it in its own ColorMap shape anyway.
-const SEG_COLORMAP = 'models/model16chan18cls/colormap.json'
 
-// colormap.json ({R,G,B,labels}) → NiiVue ColorMap. rc.9 also needs I (label value
-// per entry) and A (alpha) — background label 0 transparent, the rest opaque.
-function toColorMap(c: { R: number[]; G: number[]; B: number[]; labels?: string[] }): ColorMap {
-  const n = c.R.length
-  return {
-    R: c.R,
-    G: c.G,
-    B: c.B,
-    I: Array.from({ length: n }, (_, i) => i),
-    A: Array.from({ length: n }, (_, i) => (i === 0 ? 0 : 255)),
-    labels: c.labels,
-  }
+// The "Subcortical + GWM" (16chan18cls) label colormap — 18 FreeSurfer-style labels
+// (background + the 17 regions). App config, not shipped by the package; inlined
+// (it's tiny) so there's no served asset.
+// rc.9 wants I (label value per entry) and A (alpha) alongside R/G/B — label 0 is
+// background, hence transparent.
+const SEG_COLORMAP: ColorMap = {
+  R: [0, 245, 205, 120, 196, 220, 230, 0, 122, 236, 12, 204, 42, 119, 220, 103, 255, 165],
+  G: [0, 245, 62, 18, 58, 248, 148, 118, 186, 13, 48, 182, 204, 159, 216, 255, 165, 42],
+  B: [0, 245, 78, 134, 250, 164, 34, 14, 220, 176, 255, 142, 164, 176, 20, 255, 0, 42],
+  I: [...Array(18).keys()],
+  A: [0, ...Array(17).fill(255)],
+  labels: ['Unknown', 'Cerebral-White-Matter', 'Cerebral-Cortex', 'Lateral-Ventricle', 'Inferior-Lateral-Ventricle', 'Cerebellum-White-Matter', 'Cerebellum-Cortex', 'Thalamus', 'Caudate', 'Putamen', 'Pallidum', '3rd-Ventricle', '4th-Ventricle', 'Brain-Stem', 'Hippocampus', 'Amygdala', 'Accumbens-area', 'VentralDC'],
 }
 
-// Post a raw `--qc` job straight to the niimath worker. The wrapper's chain run()
-// only models image→ops→image; --qc takes its own argv and writes a TSV, so we drive
-// the worker directly (it stages `blob`+`extraFiles` into MEMFS, runs `cmd`, reads
-// `outName` back). The app's single-flight queue guarantees no niimath run overlaps
-// this one-shot handler swap.
-// Generic form of the same raw-post trick: run any argv and read `outName` back as
-// bytes. Used for the air-mask chain (-ras / -allineate / -otsu / -edt).
+// Post a raw job straight to the niimath worker: run any argv and read `outName`
+// back as bytes. The wrapper's chain run() only models image→ops→image, but --qc
+// takes its own argv and writes a TSV, and the air chain (-ras / -allineate /
+// -otsu / -edt) needs the same. The worker stages `blob`+`extraFiles` into MEMFS,
+// runs `cmd`, reads `outName` back. The app's single-flight queue guarantees no
+// niimath run overlaps this one-shot handler swap.
 function runNiimathRaw(cmd: string[], files: File[], outName: string): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const worker = niimathWorker()
@@ -245,33 +232,20 @@ function runNiimathQc(t1: File, seg: File): Promise<string> {
 // volume (== nibabel as_closest_canonical, so the slice fills hit the right axes), an
 // affine to the template (transform only — we need just two landmark heights), a head
 // mask, and a distance field from the head boundary into the air.
+// Static, same-origin, and re-fetched once per scan — the browser's HTTP cache is
+// the memo here, so we don't keep one of our own.
 const TEMPLATE_URL = `${import.meta.env.BASE_URL}avg152T1.nii.gz`
-// The registration template is static — fetch it once, reuse across runs. Only a
-// SUCCESSFUL fetch is memoized; a transient failure clears the cache so the next scan
-// retries instead of permanently losing air metrics.
-let templatePromise: Promise<File> | null = null
-const getTemplate = (): Promise<File> =>
-  (templatePromise ??= fetchFile(TEMPLATE_URL, 'tmpl.nii.gz').catch((e) => {
-    templatePromise = null
-    throw e
-  }))
 
 async function computeAirQc(
   t1: File,
   tissue: Record<string, number>,
   worker: Worker,
 ): Promise<{ metrics: Record<string, number>; hatFile: File }> {
-  const { readNii, mul4, computeAirMetrics } = await import('./qc-air')
-  const { writeNifti } = await import('./nifti')
-  // The outer timeout resets the shared worker. If it fired while these imports were
-  // loading, this abandoned continuation must not acquire the replacement worker.
-  if (worker !== niimathWorker()) throw new Error('air metrics cancelled')
-
   const rasBytes = await runNiimathRaw(['qc_t1.nii', '-ras', '-gz', '0', 'ras.nii'], [t1], 'ras.nii')
   const ras = readNii(rasBytes)
   const rasFile = new File([rasBytes], 'ras.nii')
 
-  const tmpl = await getTemplate()
+  const tmpl = await fetchFile(TEMPLATE_URL, 'tmpl.nii.gz')
   // A fetch can resolve after the outer timeout released the queue. Stop here rather
   // than overwriting the replacement worker's one onmessage handler.
   if (worker !== niimathWorker()) throw new Error('air metrics cancelled')
@@ -377,7 +351,7 @@ async function runSegment(file: File): Promise<void> {
     if (isCleanedUp) return
 
     setStatus('Segmenting (Subcortical + GWM)… first run downloads the model')
-    const { segment } = await import('./brainchop/index.js')
+    const { segment } = await import('@brainchop/mindgrab')
     /*
      * `?backend=webgl2` forces the fallback, and without it the fallback is
      * effectively untestable here. brainchop picks WebGPU wherever it exists,
@@ -398,10 +372,10 @@ async function runSegment(file: File): Promise<void> {
     const seg = await withTimeout(
       segment(t1, {
         model: '16chan18cls',
-        // The glue and its .wasm are served from public/brainchop/, committed
-        // there because a bundler cannot carry them: the glue finds its own
-        // .wasm through its own import.meta.url, so the pair must stay adjacent
-        // and unhashed. scripts/sync-brainchop.mjs refreshes both.
+        // Staged into public/brainchop/ by scripts/copy-brainchop.mjs (dev+build):
+        // the glue finds its own .wasm via its own import.meta.url, so the pair
+        // must stay adjacent and unhashed — public/ preserves names, a bundler
+        // would rewrite one and hash the other.
         assetPath: `${import.meta.env.BASE_URL}brainchop/`,
         backend,
         // In a Worker, which is what keeps this page usable while it runs.
@@ -439,10 +413,7 @@ async function runSegment(file: File): Promise<void> {
     if (isCleanedUp) return
     segIndex = nv.volumes.length - 1 // fixed handle: the air overlay is added on top later
 
-    const cmapRes = await fetch(`${import.meta.env.BASE_URL}${SEG_COLORMAP}`)
-    if (!cmapRes.ok) throw new Error(`fetch colormap failed: ${cmapRes.status}`)
-    const cmap = await cmapRes.json()
-    await nv.setColormapLabel(segIndex, toColorMap(cmap))
+    await nv.setColormapLabel(segIndex, SEG_COLORMAP)
     // Scene mutation is done. Apply the latest slider value first — a drag during the
     // locked window updated the control but the handler dropped it, so `addVolume`'s
     // sampled opacity may be stale — then release the lock so subsequent drags land
@@ -450,6 +421,10 @@ async function runSegment(file: File): Promise<void> {
     // bailed earlier.
     void nv.setVolume(segIndex, { opacity: Number(ovlSlider.value) / 255 })
     busy = false
+    // Teardown may have run during the awaits above. Without this, computeQc would
+    // call ensureNiimath() with a cleared `niimathReady` and spin up a fresh worker
+    // after cleanup(), which then reads nv.volumes on a destroyed NiiVue.
+    if (isCleanedUp) return
 
     // QC on the result. Non-fatal: a QC failure must not discard the segmentation
     // display — reset the worker, surface it in the status bar, leave the panel empty.
@@ -533,7 +508,7 @@ async function init(): Promise<void> {
   /*
    * NO navigator.gpu GUARD. The default `@niivue/niivue` build carries BOTH
    * renderers and falls back to WebGL2 when WebGPU is unavailable, and
-   * @niivue/brainchop does the same for the segmentation — so a browser without
+   * @brainchop/mindgrab does the same for the segmentation — so a browser without
    * WebGPU can run this page end to end. An early return on !navigator.gpu
    * refused it before either fallback was ever consulted, which is what made
    * Linux Firefox show a "needs WebGPU" message on a machine that can render
@@ -642,13 +617,8 @@ async function cleanup(): Promise<void> {
   // Terminate the niimath worker FIRST (don't await `pending`): a WASM run is one
   // uninterruptible call, so awaiting the queue would stall teardown. The terminated
   // run never resolves; any run that already resolved hits `if (isCleanedUp) return`
-  // before touching nv/ctx.
-  killNiimathWorker()
-  try {
-    ctx?.dispose() // null if WebGPU was unavailable (attachNiiVue never ran)
-  } catch {
-    // best-effort — must not skip nv.destroy() below
-  }
+  // before touching nv.
+  resetNiimathWorker()
   nv.destroy()
 }
 window.addEventListener('pagehide', (e) => {

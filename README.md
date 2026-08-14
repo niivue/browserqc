@@ -6,11 +6,11 @@ Live demo: [browserqc.org](https://browserqc.org).
 
 ## How it works
 
-Everything runs in WebAssembly + WebGPU on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
+Everything runs in WebAssembly + WebGPU (WebGL2 fallback) on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
 
-1. **Segment** — the vendored [`@niivue/brainchop`](https://github.com/neuroneural/brainchopC) runs the [brainchop](https://github.com/neuroneural/brainchop) `model16chan18cls` ("Subcortical + GWM") model on WebGPU, parcellating the brain into 17 gray/white-matter and subcortical regions. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module.
+1. **Segment** — [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) runs the [brainchop](https://github.com/neuroneural/brainchop) `model16chan18cls` ("Subcortical + GWM") model, parcellating the brain into 17 gray/white-matter and subcortical regions. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module — on WebGPU where available, WebGL2 otherwise (so no WebGPU is required).
 2. **Back-project** — the labels are resliced onto the native input grid and drawn as a colour overlay on the original scan (adjust with the **Opacity** slider).
-4. **Quality control** — [niimath](https://github.com/rordenlab/niimath) computes MRIQC-style anatomical image-quality metrics from the scan and its segmentation, shown in the side panel:
+3. **Quality control** — [niimath](https://github.com/rordenlab/niimath) computes MRIQC-style anatomical image-quality metrics from the scan and its segmentation, shown in the side panel:
    - **CJV** — coefficient of joint variation (noise + intensity non-uniformity); lower is better
    - **CNR** — contrast-to-noise (GM vs WM, over tissue + air noise); higher is better
    - **SNRd** — Dietrich SNR, normalised by background (air) noise; higher is better
@@ -28,10 +28,11 @@ Metric names and definitions follow [MRIQC](https://mriqc.readthedocs.io/en/late
 
 ## Develop
 
-The segmentation engine is **vendored** (`src/brainchop/`, `public/brainchop/`)
-and committed, so a plain clone builds with no other checkout. To pick up a new
-build of it: `cd ../brainchopC/js && npm install && npm run build`, then
-`npm run syncBrainchop` here, and commit what changes.
+The segmentation engine is the [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab)
+npm package. Its wasm modules can't be bundled (each glue file finds its own
+`.wasm` by a runtime URL), so `scripts/copy-brainchop.mjs` stages them into
+`public/brainchop/` (gitignored) before every `dev`/`build` — a plain
+`npm install` is all it needs.
 
 
 Requires **Node ≥ 22** (`npm run test:unit` imports the TypeScript sources directly via Node's type stripping).
@@ -42,7 +43,7 @@ npm run dev      # vite dev server (http://localhost:8091)
 npm run build    # typecheck + production build to dist/
 npm run preview  # serve the production build
 npm run test:unit # node --test: air-metric math (median, stats, hat, artifacts)
-npm run test:e2e # build, then a headless-Chromium smoke of the full auto-run path
+npm run test:e2e # build, then a headless-Chrome smoke of the full auto-run path (needs Google Chrome)
 ```
 
 ### Command line
@@ -56,11 +57,9 @@ node cli/qc.mjs --in T1.nii.gz --out results.json
 
 It runs the real app in headless Chrome (so the numbers match the browser exactly) and writes every `--qc` metric at full precision. Requires Google Chrome.
 
-Requires a browser with WebGPU (recent desktop Chrome, Edge, or Safari).
-
 ## License
 
-**BSD-2-Clause.** niimath comes from the [`@niivue/niimath`](https://www.npmjs.com/package/@niivue/niimath) npm package (BSD-2). Segmentation comes from the vendored [`@niivue/brainchop`](https://github.com/neuroneural/brainchopC) package (BSD-2), a C11 MeshNet reimplementation compiled to WebAssembly + WGSL.
+**BSD-2-Clause.** niimath comes from the [`@niivue/niimath`](https://www.npmjs.com/package/@niivue/niimath) npm package (BSD-2). Segmentation comes from the [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) npm package (MIT), a C11 MeshNet reimplementation compiled to WebAssembly + WGSL.
 
 ## Links
 

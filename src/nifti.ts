@@ -4,7 +4,7 @@
  * ponytail: only the header fields NiiVue needs to load a volume and place it in
  * world space (dims, datatype, pixdim, sform/srow). Not a general writer — we
  * build exactly one thing with it: the air-mask overlay on the RAS grid. (It
- * also wrote the segmentation overlay until @niivue/brainchop started returning
+ * also wrote the segmentation overlay until the brainchop module started returning
  * a complete NIfTI itself; the label-map intent and the Int16/Float32 branches
  * went with that caller.) Correctness is
  * exercised end-to-end (a malformed header makes NiiVue's addVolume throw, which

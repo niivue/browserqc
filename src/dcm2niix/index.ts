@@ -1,37 +1,9 @@
 /**
- * @niivue/nv-ext-dcm2niix
- *
- * Browser-side DICOM-to-NIfTI conversion for NiiVue, wrapping the
- * `@niivue/dcm2niix` WebAssembly build of Chris Rorden's dcm2niix.
- *
- * Two pieces of glue cover the common integration paths:
- *
- *   - {@link runDcm2niix}              — `<input webkitdirectory>` → File[]
- *   - {@link traverseDataTransferItems} — drop-event folders → File[]
- *
- * The underlying `Dcm2niix` class is re-exported for callers that need
- * full control over the command-line flags exposed by dcm2niix.
- *
- * Usage:
- * ```ts
- * import NiiVueGPU from '@niivue/niivue'
- * import { runDcm2niix } from '@niivue/nv-ext-dcm2niix'
- *
- * const nv = new NiiVueGPU()
- * await nv.attachTo('gl1')
- *
- * input.addEventListener('change', async () => {
- *   const niftiFiles = await runDcm2niix(input.files)
- *   await nv.loadVolumes([{ url: niftiFiles[0] }])
- * })
- * ```
+ * Browser-side DICOM-to-NIfTI conversion: the glue between a folder drop and the
+ * `@niivue/dcm2niix` WebAssembly build of dcm2niix.
  */
 
 import { Dcm2niix } from '@niivue/dcm2niix'
-
-// Re-export so callers can drop down to the raw API when they need flags
-// like compression level, BIDS sidecars, etc.
-export { Dcm2niix }
 
 /**
  * Drop items expose a non-standard `_webkitRelativePath` that dcm2niix
@@ -40,36 +12,12 @@ export { Dcm2niix }
  */
 type FileWithRelativePath = File & { _webkitRelativePath?: string }
 
-/** Options for {@link runDcm2niix}. */
-export interface RunDcm2niixOptions {
-  /**
-   * Filter the result list down to NIfTI outputs (`.nii` and `.nii.gz`).
-   * BIDS sidecars and other dcm2niix outputs are dropped. Default: `true`.
-   */
-  niftiOnly?: boolean
-}
-
 /**
- * Convert DICOM files to NIfTI by spinning up a fresh dcm2niix worker,
- * feeding it the files, waiting for the result, then terminating the
- * worker so the WASM heap is released.
- *
- * Each call boots its own worker — fine for one-off conversions; for
- * batch workflows, instantiate `Dcm2niix` once and reuse it (and call
- * `worker?.terminate()` yourself when finished).
- *
- * @param files       FileList from `<input webkitdirectory>` or File[]
- *                    from a drop event (see {@link traverseDataTransferItems}).
- * @param options     See {@link RunDcm2niixOptions}.
- * @returns           Converted output files (NIfTI by default).
+ * Convert DICOM files to NIfTI, returning only the NIfTI outputs (dcm2niix also
+ * emits BIDS sidecars). Each call boots its own worker and terminates it after,
+ * so the WASM heap is released.
  */
-export async function runDcm2niix(
-  files: FileList | File[] | null | undefined,
-  options: RunDcm2niixOptions = {},
-): Promise<File[]> {
-  const { niftiOnly = true } = options
-  if (!files || files.length === 0) return []
-
+export async function runDcm2niix(files: File[]): Promise<File[]> {
   const dcm2niix = new Dcm2niix()
   try {
     // Bound init + run as one operation. @niivue/dcm2niix's init() only settles on a
@@ -86,9 +34,7 @@ export async function runDcm2niix(
       RUN_TIMEOUT_MS,
       'dcm2niix',
     )) as File[]
-    return niftiOnly
-      ? result.filter((f) => /\.nii(\.gz)?$/i.test(f.name))
-      : result
+    return result.filter((f) => /\.nii(\.gz)?$/i.test(f.name))
   } finally {
     dcm2niix.worker?.terminate()
   }
@@ -106,21 +52,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 /**
- * Walk a drop event's `DataTransferItemList`, recurse into directories,
- * and stamp `_webkitRelativePath` on each file so dcm2niix can group by
- * series.
- *
- * The browser exposes folder structure on drop only via the
- * `webkitGetAsEntry()` API; this helper runs that traversal for you.
- *
- * @example
- * ```ts
- * dropTarget.addEventListener('drop', async (e) => {
- *   e.preventDefault()
- *   const files = await traverseDataTransferItems(e.dataTransfer!.items)
- *   const niftiFiles = await runDcm2niix(files)
- * })
- * ```
+ * Walk a drop event's `DataTransferItemList`, recurse into directories, and stamp
+ * `_webkitRelativePath` on each file so dcm2niix can group by series. On drop the
+ * browser exposes folder structure only via `webkitGetAsEntry()`.
  */
 export async function traverseDataTransferItems(
   items: DataTransferItemList,

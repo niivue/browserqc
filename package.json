@@ -9,21 +9,20 @@
   },
   "description": "Automated MRI quality control, entirely in the browser. No data leaves your machine. brainchop deep-learning segmentation (WebGPU) + niimath MRIQC-style metrics + NiiVue.",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "node scripts/copy-brainchop.mjs && vite",
+    "build": "node scripts/copy-brainchop.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "syncBrainchop": "node scripts/sync-brainchop.mjs",
     "test:unit": "node --test test/*.test.mjs",
     "test:e2e": "npm run build && node test/smoke.mjs"
   },
   "dependencies": {
+    "@brainchop/mindgrab": "0.1.20260813",
     "@niivue/dcm2niix": "^1.2.0",
     "@niivue/niimath": "^1.3.3",
     "@niivue/niivue": "1.0.0-rc.9"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.52",
     "playwright": "^1.57.0",
     "typescript": "~5.8.3",
     "vite": "^6.3.2"

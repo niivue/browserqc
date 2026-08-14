@@ -23,9 +23,5 @@ declare module '@niivue/dcm2niix' {
     init(): Promise<true>
     /** Standard `<input webkitdirectory>` `FileList` or `File[]`. */
     input(files: FileList | File[]): Dcm2niixProcessor
-    /** Alias for {@link input}, for clarity at the call site. */
-    inputFromWebkitDirectory(files: FileList | File[]): Dcm2niixProcessor
-    /** Files harvested from a drop event (see `traverseDataTransferItems`). */
-    inputFromDropItems(files: File[]): Dcm2niixProcessor
   }
 }

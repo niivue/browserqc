@@ -7,7 +7,7 @@
  * WM: we pass the CSF and WM label values, and every other non-zero label is GM.
  *
  * The label→tissue mapping is FIXED for the "Subcortical + GWM" model
- * (model16chan18cls/colormap.json) — the model always emits the same 18 labels, so
+ * (16chan18cls) — the model always emits the same 18 labels, so
  * we hard-code the grouping rather than parse names at runtime:
  *   CSF = ventricles          → 3 Lateral, 4 Inferior-Lateral, 11 3rd, 12 4th
  *   WM  = white matter        → 1 Cerebral-WM, 5 Cerebellum-WM

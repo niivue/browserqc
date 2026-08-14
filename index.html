@@ -55,13 +55,13 @@
 
   <dialog id="aboutDialog">
     <form method="dialog">
-      <h3>BrowserQC</h3>
+      <h3><a href="https://github.com/niivue/browserqc" target="_blank" rel="noopener">BrowserQC</a></h3>
       <p>Automated MRI quality control, <strong>entirely in your browser</strong> — no upload, no server.
         Drag in a NIfTI image (or a folder of DICOM files) and it runs automatically.</p>
       <ul>
         <li><strong>Segmentation</strong> — a
           <a href="https://github.com/neuroneural/brainchop" target="_blank" rel="noopener">brainchop</a>
-          deep-learning model (WebGPU) parcellates the brain into 17 gray/white-matter and
+          deep-learning model parcellates the brain into 17 gray/white-matter and
           subcortical regions, shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
           slider)</li>
         <li><strong>Quality metrics</strong> — <a href="https://github.com/rordenlab/niimath" target="_blank"
@@ -79,8 +79,7 @@
         <a href="https://pubmed.ncbi.nlm.nih.gov/28945803/" target="_blank" rel="noopener">PMID: 28945803</a>.
         With a masked background the CNR omits the air-noise term, so values are relative, not
         comparable to MRIQC normative data.</small></p>
-      <p><small>Licensed <strong>BSD-2-Clause</strong>. Requires a browser with WebGPU (recent desktop
-        Chrome, Edge, or Safari).</small></p>
+      <p><small>Licensed <strong>BSD-2-Clause</strong>. Runs on WebGPU where available, WebGL2 otherwise.</small></p>
       <button autofocus id="closeAboutBtn" value="default">Close</button>
     </form>
   </dialog>

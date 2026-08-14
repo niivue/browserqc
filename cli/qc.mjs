@@ -7,10 +7,10 @@
  *
  * This drives the actual BrowserQC page in headless Chrome rather than
  * re-implementing the pipeline in Node, so the numbers are the browser's by
- * construction. That is not just convenience: segmentation needs WebGPU, which Node
- * has no implementation of. The wasm module's only backend is `webgpu` and it
- * refuses rather than silently falling back to its (validation-only, minutes-per-
- * volume) CPU engine.
+ * construction. That is not just convenience: segmentation needs a GPU backend —
+ * WebGPU or WebGL2, both browser-only APIs Node has no implementation of, so the
+ * wasm module refuses there rather than falling back to its (validation-only,
+ * minutes-per-volume) CPU engine. Headless Chrome supplies WebGPU via SwiftShader.
  *
  * The input is injected by intercepting the page's request for its bundled default
  * image, so the app's normal auto-run does all the work and no app code is special-
@@ -81,7 +81,16 @@ async function waitForServer(deadlineMs = 20000) {
   const until = Date.now() + deadlineMs
   while (Date.now() < until) {
     if (previewExited) throw new Error(`vite preview exited — is port ${args.port} in use?`)
-    try { if ((await fetch(URL_BASE)).ok) return } catch { /* not up yet */ }
+    let up = false
+    try { up = (await fetch(URL_BASE)).ok } catch { /* not up yet */ }
+    if (up) {
+      // The port answered — but a stale server may have won it and forced our
+      // --strictPort child to exit, which would report metrics from an old build.
+      // That exit lands within a few hundred ms, so settle and re-check.
+      await wait(500)
+      if (previewExited) throw new Error(`port ${args.port} is served by another process — refusing to report from a stale build`)
+      return
+    }
     await wait(250)
   }
   throw new Error('vite preview did not come up')
