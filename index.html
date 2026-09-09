@@ -65,8 +65,8 @@
           subcortical regions, shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
           slider)</li>
         <li><strong>Quality metrics</strong> — <a href="https://github.com/rordenlab/niimath" target="_blank"
-            rel="noopener">niimath</a> computes MRIQC-style image-quality metrics (CJV, CNR, SNR, WM2MAX, EFC,
-          tissue composition) from the scan and its segmentation</li>
+            rel="noopener">niimath</a> computes MRIQC-style image-quality metrics (CJV, CNR, SNRd, FBER, SNR, WM2MAX,
+          EFC, tissue composition) from the scan and its segmentation</li>
       </ul>
       <p>Rendering uses <a href="https://niivue.com/" target="_blank" rel="noopener">NiiVue</a>;
         DICOM import uses <a href="https://github.com/rordenlab/dcm2niix" target="_blank" rel="noopener">dcm2niix</a>.
@@ -77,8 +77,8 @@
         <em>MRIQC: Advancing the automatic prediction of image quality in MRI from unseen sites.</em>
         PLoS One 12(9):e0184661.
         <a href="https://pubmed.ncbi.nlm.nih.gov/28945803/" target="_blank" rel="noopener">PMID: 28945803</a>.
-        With a masked background the CNR omits the air-noise term, so values are relative, not
-        comparable to MRIQC normative data.</small></p>
+        CNR includes an air-noise term from an MRIQC-style background mask; with a hard
+        segmentation and no bias correction the values approximate MRIQC, not its normative data.</small></p>
       <p><small>Licensed <strong>BSD-2-Clause</strong>. Runs on WebGPU where available, WebGL2 otherwise.</small></p>
       <button autofocus id="closeAboutBtn" value="default">Close</button>
     </form>

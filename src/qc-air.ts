@@ -78,6 +78,14 @@ export function median(sorted: Float32Array): number {
   return n % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
+/** numpy's default ('linear') percentile of an ascending-sorted array, as MRIQC and
+ *  niimath's --qc use. */
+function pctl(sorted: Float32Array, q: number): number {
+  const r = q * (sorted.length - 1)
+  const lo = Math.floor(r)
+  return lo + 1 < sorted.length ? sorted[lo] + (r - lo) * (sorted[lo + 1] - sorted[lo]) : sorted[lo]
+}
+
 export function stats(sorted: Float32Array): Record<string, number> {
   const n = sorted.length
   let sum = 0
@@ -103,8 +111,8 @@ export function stats(sorted: Float32Array): Record<string, number> {
     mean,
     stdv,
     mad,
-    p05: sorted[Math.floor(n * 0.05)],
-    p95: sorted[Math.floor(n * 0.95)],
+    p05: pctl(sorted, 0.05),
+    p95: pctl(sorted, 0.95),
     k: varc > 0 ? s4 / n / (varc * varc) - 3 : 0, // Fisher (excess) kurtosis
     n,
   }
@@ -247,9 +255,10 @@ export function computeAirMetrics(
     out.fber = bgMu < 1e-3 ? -1 : median(fg) / bgMu
   }
 
-  // 6. CNR with the air term (MRIQC's definition). Note sigma_air contributes <1% in
+  // 6. CNR with the air term. MRIQC feeds cnr() the tissue MEDIANS (interfaces/
+  //    anatomical.py), as niimath's cnr_noair does. sigma_air contributes <1% in
   //    practice — the tissue sigmas dominate — but this is the published formula.
-  const { summary_wm_mean: mw, summary_gm_mean: mg, summary_wm_stdv: sw, summary_gm_stdv: sg } = tissue
+  const { summary_wm_median: mw, summary_gm_median: mg, summary_wm_stdv: sw, summary_gm_stdv: sg } = tissue
   if ([mw, mg, sw, sg].every(Number.isFinite)) {
     out.cnr = Math.abs(mw - mg) / Math.sqrt(bg.stdv * bg.stdv + sg * sg + sw * sw)
   }
