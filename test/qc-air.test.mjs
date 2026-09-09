@@ -19,6 +19,8 @@ test('stats matches hand-computed values', () => {
   close(s.median, 2.5)
   close(s.stdv, Math.sqrt(1.25)) // population stdv
   close(s.mad, 1.0 * 1.4826) // |x-2.5| = {1.5,0.5,0.5,1.5} → median 1.0, ×1.4826
+  close(s.p05, 1.15) // numpy linear: 0.05 * 3 = 0.15 → 1 + 0.15
+  close(s.p95, 3.85)
   assert.equal(s.n, 4)
 })
 
@@ -43,7 +45,7 @@ function synthetic() {
 const ID = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
 const TISSUE = {
   summary_wm_median: 100, summary_gm_median: 50, summary_csf_median: 20,
-  summary_wm_mean: 100, summary_gm_mean: 50, summary_wm_stdv: 10, summary_gm_stdv: 10,
+  summary_wm_stdv: 10, summary_gm_stdv: 10,
 }
 
 test('computeAirMetrics: hat selection, background stats, SNRd, CNR', () => {
@@ -54,7 +56,8 @@ test('computeAirMetrics: hat selection, background stats, SNRd, CNR', () => {
   close(metrics.summary_bg_mad, 1.4826)
   assert.equal(metrics.qi_1, 0) // no artifacts
   close(metrics.snrd_wm, (0.6551364 * 100) / 1.4826, 1e-3) // Dietrich, median/mad
-  assert.ok(metrics.cnr > 0)
+  // medians (100, 50), not means: MRIQC's definition. |100-50| / sqrt(bg.stdv² + 10² + 10²)
+  close(metrics.cnr, 50 / Math.sqrt(metrics.summary_bg_stdv ** 2 + 200))
 })
 
 test('computeAirMetrics: an artifact blob is excluded from the background and counted in qi_1', () => {

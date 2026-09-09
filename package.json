@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=22"
   },
-  "description": "Automated MRI quality control, entirely in the browser. No data leaves your machine. brainchop deep-learning segmentation (WebGPU) + niimath MRIQC-style metrics + NiiVue.",
+  "description": "Automated MRI quality control, entirely in the browser. No data leaves your machine. brainchop deep-learning segmentation (WebGPU, WebGL2 fallback) + niimath MRIQC-style metrics + NiiVue.",
   "scripts": {
     "dev": "node scripts/copy-brainchop.mjs && vite",
     "build": "node scripts/copy-brainchop.mjs && tsc --noEmit && vite build",

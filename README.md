@@ -42,20 +42,25 @@ npm install
 npm run dev      # vite dev server (http://localhost:8091)
 npm run build    # typecheck + production build to dist/
 npm run preview  # serve the production build
-npm run test:unit # node --test: air-metric math (median, stats, hat, artifacts)
+npm run test:unit # node --test: air-metric math (median, stats, hat, artifacts) + the browserqc.sh contract
 npm run test:e2e # build, then a headless-Chrome smoke of the full auto-run path (needs Google Chrome)
 ```
 
 ### Command line
 
-Batch/scripted QC, same pipeline, JSON out (drop `--bids sidecar.json` to embed scan metadata):
+The same pipeline on native executables, no browser. Put [`brainchop-16chan18cls`](https://github.com/neuroneural/brainchopC/releases) and a [niimath](https://github.com/rordenlab/niimath) with `--qc --air`/`--json` (its `qc` branch; newer than the 1.3.3 release) on your PATH, then:
 
 ```bash
-npm run build
-node cli/qc.mjs --in T1.nii.gz --out results.json
+./browserqc.sh T1.nii.gz results.json
 ```
 
-It runs the real app in headless Chrome (so the numbers match the browser exactly) and writes every `--qc` metric at full precision. Requires Google Chrome.
+It segments with brainchop and runs `niimath --qc ... --air avg152T1.nii.gz --json`, which computes every metric the page shows, air metrics included, with niimath's own provenance (no `bids_meta`). On the bundled subject, native and browser agree to within 0.4 % on every metric (56 of 58 within 0.1 %); the residual is the GPU segmentation, not the QC.
+
+To reproduce the browser's numbers exactly, drive the real app in headless Chrome instead (needs `npm run build` and Google Chrome; `--bids sidecar.json` embeds scan metadata):
+
+```bash
+node cli/qc.mjs --in T1.nii.gz --out results.json
+```
 
 ## License
 
