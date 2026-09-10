@@ -7,7 +7,7 @@
   <!-- empty favicon: suppress the browser's default /favicon.ico request (404) -->
   <link rel="icon" href="data:," />
   <title>BrowserQC</title>
-  <script type="module" crossorigin src="/assets/index-DEC0_sS9.js"></script>
+  <script type="module" crossorigin src="/assets/index-D24o8fEy.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-CS7T1IBY.css">
 </head>
 
@@ -27,10 +27,6 @@
       <div class="qc-opacity">
         <label for="ovlSlider">Opacity</label>
         <input type="range" min="0" max="255" value="128" id="ovlSlider" aria-label="Segmentation overlay opacity" />
-      </div>
-      <div class="qc-opacity">
-        <label for="hatToggle">Air mask</label>
-        <input type="checkbox" id="hatToggle" disabled title="Show the background (air) voxels used for the MRIQC-style metrics" />
       </div>
       <div id="qcBody">
         <p class="qc-empty">No QC values yet — metrics appear automatically once an image loads.</p>
@@ -78,8 +74,8 @@
         <em>MRIQC: Advancing the automatic prediction of image quality in MRI from unseen sites.</em>
         PLoS One 12(9):e0184661.
         <a href="https://pubmed.ncbi.nlm.nih.gov/28945803/" target="_blank" rel="noopener">PMID: 28945803</a>.
-        With a masked background the CNR omits the air-noise term, so values are relative, not
-        comparable to MRIQC normative data.</small></p>
+        CNR includes an air-noise term; hard segmentation and no bias correction still make
+        values approximate rather than comparable to MRIQC normative data.</small></p>
       <p><small>Licensed <strong>BSD-2-Clause</strong>. Runs on WebGPU where available, WebGL2 otherwise.</small></p>
       <button autofocus id="closeAboutBtn" value="default">Close</button>
     </form>
