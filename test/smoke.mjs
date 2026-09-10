@@ -121,15 +121,11 @@ try {
     { timeout: 240000 },
   ).catch(() => fail('auto segmentation + QC did not complete (NiiVue attach / model / niimath?)', page))
   if (!/CJV/.test(await qcText())) await fail('QC panel did not populate after segmentation', page)
-  // Air-mask metrics + overlay: SNRd only appears if the hat pipeline ran, and the
-  // toggle is enabled only once the overlay volume is added.
-  if (!/SNRd/.test(await qcText())) await fail('air-mask metrics (SNRd) missing from panel', page)
-  if (await page.$eval('#hatToggle', (el) => el.disabled)) await fail('air-mask toggle not enabled', page)
+  // The SNRd *label* always renders; niimath nulls snrd_* when the air mask is too
+  // small, so gate on the value via the CLI seam.
+  if (!Number.isFinite(await page.evaluate(() => window.browserqcMetrics?.snrd_total)))
+    await fail('air-mask metrics (snrd_total) missing from report', page)
   console.log('✓ auto segmentation + niimath QC ran, panel populated')
-
-  // 2b. Toggle the air-mask overlay on/off without throwing.
-  await page.click('#hatToggle')
-  await page.click('#hatToggle')
 
   // 3. Opacity slider drives the overlay (last volume) without throwing.
   await page.$eval('#ovlSlider', (el) => {

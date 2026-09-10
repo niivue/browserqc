@@ -2,8 +2,8 @@
  * MRIQC-style quality-control metrics for the segmentation result.
  *
  * niimath's `--qc` reads the input T1 + a matching integer segmentation and emits
- * a one-row TSV of anatomical IQMs (CJV, CNR, SNR, WM2MAX, EFC, ICV fractions,
- * per-tissue volume/intensity summaries). It classifies every voxel as CSF / GM /
+ * a JSON report of anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV
+ * fractions, per-tissue volume/intensity summaries, background statistics). It classifies every voxel as CSF / GM /
  * WM: we pass the CSF and WM label values, and every other non-zero label is GM.
  *
  * The label→tissue mapping is FIXED for the "Subcortical + GWM" model
@@ -17,21 +17,10 @@
 export const CSF_LABELS = [3, 4, 11, 12]
 export const WM_LABELS = [1, 5]
 
-/** Column-keyed values from niimath's `--qc` TSV (nan → NaN). */
+/** Column-keyed numeric values in niimath's `--qc` JSON report. */
 export type QcMetrics = Record<string, number>
 
-/**
- * Assemble an MRIQC-style report: metrics flat at the top level, alongside image
- * geometry, an optional BIDS sidecar (`bids_meta`, as dcm2niix emits) and provenance.
- * Mirrors the layout of MRIQC's `<sub>_T1w.json` so the two can be diffed directly.
- *
- * Naming follows MRIQC where the definition matches. `cnr` carries the air term (the
- * air step computes it and supersedes niimath's air-free `cnr_noair`, which only
- * survives as a fallback when that step is skipped) — but like the rest it is still an
- * approximation, not normatively comparable (different segmentation + no INU
- * correction). `efc_brain` keeps our name because it is computed over non-zero voxels,
- * not MRIQC's framed extent.
- */
+/** niimath's JSON report, extended with BrowserQC's optional BIDS sidecar. */
 export type QcReport = Record<string, unknown>
 
 /**
@@ -51,52 +40,14 @@ export function bindSidecar(
   return { bind: dropMeta ?? staged ?? null, staged: null }
 }
 
-export function buildQcReport(
-  metrics: QcMetrics,
-  geom: { dims: number[]; pixDims: number[] },
-  bidsMeta?: unknown,
-): QcReport {
-  const report: QcReport = { ...metrics }
-  report.size_x = geom.dims[1]
-  report.size_y = geom.dims[2]
-  report.size_z = geom.dims[3]
-  report.spacing_x = geom.pixDims[1]
-  report.spacing_y = geom.pixDims[2]
-  report.spacing_z = geom.pixDims[3]
-  if (bidsMeta) report.bids_meta = bidsMeta
-  report.provenance = {
-    software: 'BrowserQC',
-    segmentation: 'brainchop model16chan18cls (Subcortical + GWM)',
-    metrics: 'niimath --qc',
-    csf_labels: CSF_LABELS,
-    wm_labels: WM_LABELS,
-  }
-  return report
-}
-
-/** Parse niimath's two-line (header + values) `--qc` TSV. */
-export function parseQcTsv(tsv: string): QcMetrics {
-  const lines = tsv.trim().split('\n')
-  if (lines.length < 2) throw new Error('QC output was empty or malformed')
-  const keys = lines[0].split('\t')
-  const vals = lines[1].split('\t')
-  const out: QcMetrics = {}
-  keys.forEach((k, i) => {
-    out[k.trim()] = Number(vals[i])
-  })
-  return out
-}
-
 // --- Display spec ---
 type Better = 'low' | 'high' | null
-type MetricSpec = { key: string; label: string; desc: string; better: Better; alt?: string }
+type MetricSpec = { key: string; label: string; desc: string; better: Better }
 
 // Headline quality IQMs (order = display order).
 const QUALITY: MetricSpec[] = [
   { key: 'cjv', label: 'CJV', desc: 'Coefficient of joint variation (noise + INU)', better: 'low' },
-  // `cnr` needs the air term; if the air pipeline was skipped, fall back to niimath's
-  // air-free `cnr_noair` so the row still shows a value.
-  { key: 'cnr', alt: 'cnr_noair', label: 'CNR', desc: 'Contrast-to-noise (GM vs WM over tissue + air noise)', better: 'high' },
+  { key: 'cnr', label: 'CNR', desc: 'Contrast-to-noise (GM vs WM over tissue + air noise)', better: 'high' },
   { key: 'snrd_total', label: 'SNRd', desc: 'Dietrich SNR, mean over tissues (air MAD)', better: 'high' },
   { key: 'fber', label: 'FBER', desc: 'Foreground-background energy ratio', better: 'high' },
   { key: 'snr_total', label: 'SNR', desc: 'Signal-to-noise, mean over tissues', better: 'high' },
@@ -141,7 +92,7 @@ export function renderQc(body: HTMLElement, metrics: QcMetrics | null): void {
   const snrDetail = TISSUES.map((t) => `${t.label} ${num(metrics[`snr_${t.key}`])}`).join(' · ')
   const quality = QUALITY.map((m) => {
     const title = m.key === 'snr_total' ? `${m.desc} — ${snrDetail}` : m.desc
-    const value = metrics[m.key] ?? (m.alt !== undefined ? metrics[m.alt] : NaN)
+    const value = metrics[m.key] ?? NaN
     return `<div class="qc-row" title="${esc(title)}">
       <span class="qc-k">${m.label}${hint(m.better)}</span>
       <span class="qc-v">${num(value)}</span>

@@ -24,7 +24,7 @@ Rendering uses [NiiVue](https://niivue.com/); DICOM import uses [dcm2niix](https
 
 Metric names and definitions follow [MRIQC](https://mriqc.readthedocs.io/en/latest/), so outputs can be diffed against it directly. A **Save** button writes the metrics as MRIQC-style JSON (the CLI writes the same file); drop a BIDS sidecar `.json` alongside the image and it rides along as `bids_meta`.
 
-> This is a fast **approximation** of MRIQC, not a reimplementation: it uses a hard deep-learning parcellation rather than FSL-FAST partial-volume maps, and raw intensities rather than an N4-bias-corrected image. Expect the same ballpark and the same ranking, not the same numbers — validated against MRIQC, `snrd_*` land within ~10 % while background *levels* and `icvs_csf` differ systematically. Not a substitute for MRIQC's normative values.
+> This is a fast **approximation** of MRIQC, not a reimplementation: it uses a hard deep-learning parcellation rather than FSL-FAST partial-volume maps, and raw intensities rather than an N4-bias-corrected image. Expect the same ballpark and the same ranking, not the same numbers — not yet re-validated against MRIQC with niimath's native `--air` metrics. Not a substitute for MRIQC's normative values.
 
 ## Develop
 
@@ -42,7 +42,7 @@ npm install
 npm run dev      # vite dev server (http://localhost:8091)
 npm run build    # typecheck + production build to dist/
 npm run preview  # serve the production build
-npm run test:unit # node --test: air-metric math (median, stats, hat, artifacts)
+npm run test:unit # node --test: BIDS-sidecar state machine
 npm run test:e2e # build, then a headless-Chrome smoke of the full auto-run path (needs Google Chrome)
 ```
 
