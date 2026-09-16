@@ -7,7 +7,7 @@
   <!-- empty favicon: suppress the browser's default /favicon.ico request (404) -->
   <link rel="icon" href="data:," />
   <title>BrowserQC</title>
-  <script type="module" crossorigin src="/assets/index-D24o8fEy.js"></script>
+  <script type="module" crossorigin src="/assets/index-Bea32W4s.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-CS7T1IBY.css">
 </head>
 
@@ -23,6 +23,13 @@
         </h3>
         <button id="saveBtn" class="qc-about" type="button" disabled title="Save metrics as MRIQC-style JSON">Save</button>
         <button id="aboutBtn" class="qc-about" type="button">About</button>
+      </div>
+      <div class="qc-opacity">
+        <label for="modelPick">Model</label>
+        <select id="modelPick" aria-label="Segmentation model">
+          <option value="16chan18cls" selected>Subcortical + GWM (16ch)</option>
+          <option value="mindmap">Subcortical + GWM (24ch, experimental)</option>
+        </select>
       </div>
       <div class="qc-opacity">
         <label for="ovlSlider">Opacity</label>

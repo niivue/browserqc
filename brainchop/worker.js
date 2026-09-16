@@ -12,10 +12,20 @@ var BrainchopError = class extends Error {
 };
 
 // src/device.ts
-var ACTIVATION_BYTES = 256 * 256 * 256 * 16 * 2;
-var WANT_BYTES = 1024 * 1024 * 1024;
+var MODEL_CHANNELS = {
+  mindgrab: 16,
+  "16chan18cls": 16,
+  mindmap: 24
+};
+function activationBytes(model) {
+  return 256 * 256 * 256 * MODEL_CHANNELS[model] * 2;
+}
+var ACTIVATION_BYTES = activationBytes("16chan18cls");
+function wantBytes(model) {
+  return Math.max(1024 * 1024 * 1024, 2 * activationBytes(model));
+}
 var MiB = (n) => `${Math.round(n / (1024 * 1024))} MiB`;
-async function checkSupport() {
+async function checkSupport(model = "16chan18cls") {
   if (typeof navigator === "undefined" || !navigator.gpu)
     return {
       supported: false,
@@ -32,13 +42,14 @@ async function checkSupport() {
     reasons.push(
       "the adapter does not support the shader-f16 feature, which the kernels require; an f32 path would need more than 2 GiB of activations"
     );
-  if (maxStorageBufferBindingSize < ACTIVATION_BYTES)
+  const need = activationBytes(model);
+  if (maxStorageBufferBindingSize < need)
     reasons.push(
-      `maxStorageBufferBindingSize is ${MiB(maxStorageBufferBindingSize)}, but one activation buffer needs ${MiB(ACTIVATION_BYTES)}`
+      `maxStorageBufferBindingSize is ${MiB(maxStorageBufferBindingSize)}, but one ${model} activation buffer needs ${MiB(need)}`
     );
-  if (maxBufferSize < ACTIVATION_BYTES)
+  if (maxBufferSize < need)
     reasons.push(
-      `maxBufferSize is ${MiB(maxBufferSize)}, but one activation buffer needs ${MiB(ACTIVATION_BYTES)}`
+      `maxBufferSize is ${MiB(maxBufferSize)}, but one ${model} activation buffer needs ${MiB(need)}`
     );
   return {
     supported: reasons.length === 0,
@@ -48,7 +59,7 @@ async function checkSupport() {
     hasShaderF16
   };
 }
-async function acquireDevice() {
+async function acquireDevice(model = "16chan18cls") {
   if (typeof navigator === "undefined" || !navigator.gpu)
     throw new BrainchopError(
       "no-webgpu",
@@ -61,12 +72,14 @@ async function acquireDevice() {
       "no-f16",
       "this adapter lacks the shader-f16 feature, which the segmentation kernels require"
     );
-  const maxBufferSize = Math.min(WANT_BYTES, adapter.limits.maxBufferSize);
-  const maxStorageBufferBindingSize = Math.min(WANT_BYTES, adapter.limits.maxStorageBufferBindingSize);
-  if (maxStorageBufferBindingSize < ACTIVATION_BYTES || maxBufferSize < ACTIVATION_BYTES)
+  const want = wantBytes(model);
+  const maxBufferSize = Math.min(want, adapter.limits.maxBufferSize);
+  const maxStorageBufferBindingSize = Math.min(want, adapter.limits.maxStorageBufferBindingSize);
+  const need = activationBytes(model);
+  if (maxStorageBufferBindingSize < need || maxBufferSize < need)
     throw new BrainchopError(
       "device-too-small",
-      `this device allows ${MiB(maxStorageBufferBindingSize)} per storage binding and ${MiB(maxBufferSize)} per buffer, but the model needs ${MiB(ACTIVATION_BYTES)} for a single activation`
+      `this device allows ${MiB(maxStorageBufferBindingSize)} per storage binding and ${MiB(maxBufferSize)} per buffer, but ${model} needs ${MiB(need)} for a single activation`
     );
   return adapter.requestDevice({
     requiredFeatures: ["shader-f16"],
@@ -192,39 +205,51 @@ async function gzip(bytes) {
 
 // src/run.ts
 var DEFAULT_TIMEOUT_MS = 12e4;
+var INITIALIZATION_TIMEOUT_MS = 12e4;
 var CPU_TIMEOUT_MS = 9e5;
 var MODULE_FILE = {
   webgpu: {
     mindgrab: "./brainchop-mindgrab-gpu.js",
-    "16chan18cls": "./brainchop-16chan18cls-gpu.js"
+    "16chan18cls": "./brainchop-16chan18cls-gpu.js",
+    mindmap: "./brainchop-mindmap-gpu.js"
   },
   webgl2: {
     mindgrab: "./brainchop-mindgrab-gl.js",
-    "16chan18cls": "./brainchop-16chan18cls-gl.js"
+    "16chan18cls": "./brainchop-16chan18cls-gl.js",
+    mindmap: "./brainchop-mindmap-gl.js"
   },
   // No suffix: the CPU modules are the plain `make wasm` output, and they are
   // the only ones built with -pthread.
   cpu: {
     mindgrab: "./brainchop-mindgrab.js",
-    "16chan18cls": "./brainchop-16chan18cls.js"
+    "16chan18cls": "./brainchop-16chan18cls.js",
+    mindmap: "./brainchop-mindmap.js"
   }
 };
 var factories = /* @__PURE__ */ new Map();
-function moduleUrl(backend, model, assetPath) {
-  const file = MODULE_FILE[backend][model];
+function assetUrl(file, assetPath) {
   if (!assetPath) return new URL(file, import.meta.url).href;
   const base = assetPath.endsWith("/") ? assetPath : `${assetPath}/`;
   const here = typeof location !== "undefined" ? location.href : "file:///";
   const url = new URL(`${base}${file.replace("./", "")}`, here);
-  if (typeof location !== "undefined" && url.origin !== location.origin)
-    throw new BrainchopError(
-      "unsupported-option",
-      `assetPath must be same-origin; ${url.origin} is not ${location.origin}`
-    );
+  if (typeof location !== "undefined") {
+    if (location.origin === "null")
+      throw new BrainchopError(
+        "unsupported-option",
+        "assetPath cannot be used from an opaque origin (file:// or a sandboxed iframe); serve the page over http(s)"
+      );
+    if (url.origin !== location.origin)
+      throw new BrainchopError(
+        "unsupported-option",
+        `assetPath must be same-origin; ${url.origin} is not ${location.origin}`
+      );
+  }
   return url.href;
 }
-function loadFactory(backend, model, assetPath) {
-  const url = moduleUrl(backend, model, assetPath);
+function moduleUrl(backend, model, assetPath) {
+  return assetUrl(MODULE_FILE[backend][model], assetPath);
+}
+function loadFactory(url) {
   let pending = factories.get(url);
   if (!pending) {
     pending = import(
@@ -232,11 +257,13 @@ function loadFactory(backend, model, assetPath) {
       url
     ).then((m) => m.default);
     factories.set(url, pending);
+    void pending.catch(() => {
+      if (factories.get(url) === pending) factories.delete(url);
+    });
   }
   return pending;
 }
 async function run(request) {
-  const factory = await loadFactory(request.backend, request.model, request.assetPath);
   const log = [];
   const record = (line) => {
     log.push(line);
@@ -262,16 +289,26 @@ async function run(request) {
     config.preinitializedWebGLContext = request.glContext;
   }
   const limit = request.timeoutMs ?? (request.backend === "cpu" ? CPU_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const initializationLimit = Math.min(limit, INITIALIZATION_TIMEOUT_MS);
+  const url = moduleUrl(request.backend, request.model, request.assetPath);
+  const factoryPromise = loadFactory(url);
+  let initializationTimedOut = false;
   const module = await Promise.race([
-    factory(config),
+    factoryPromise.then((createModule) => createModule(config)),
     new Promise((_, reject2) => {
-      timer = setTimeout(() => reject2(new BrainchopError(
-        "inference-failed",
-        `the ${request.model} module did not finish initialising within ${limit} ms`,
-        log
-      )), limit);
+      timer = setTimeout(() => {
+        initializationTimedOut = true;
+        reject2(new BrainchopError(
+          "initialization-failed",
+          `the ${request.model} module did not finish initialising within ${initializationLimit} ms`,
+          log
+        ));
+      }, initializationLimit);
     })
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => {
+    clearTimeout(timer);
+    if (initializationTimedOut && factories.get(url) === factoryPromise) factories.delete(url);
+  });
   if (request.backend === "webgl2") {
     if (!module.specialHTMLTargets)
       throw new BrainchopError(
@@ -360,6 +397,18 @@ var MODELS = {
       mask: false,
       border: false
     }
+  },
+  mindmap: {
+    name: "mindmap",
+    description: "18-class brain segmentation (24-channel, gDice-priority)",
+    outputKind: "labels",
+    capabilities: {
+      ct: true,
+      comply: true,
+      saveConform: true,
+      mask: false,
+      border: false
+    }
   }
 };
 function reject(model, option, why) {
@@ -407,16 +456,7 @@ function buildArgs(options) {
   return { args, maskPath };
 }
 function workerUrl(assetPath) {
-  if (!assetPath) return new URL("./worker.js", import.meta.url).href;
-  const base = assetPath.endsWith("/") ? assetPath : `${assetPath}/`;
-  const here = typeof location !== "undefined" ? location.href : "file:///";
-  const url = new URL(`${base}worker.js`, here);
-  if (typeof location !== "undefined" && url.origin !== location.origin)
-    throw new BrainchopError(
-      "unsupported-option",
-      `assetPath must be same-origin; ${url.origin} is not ${location.origin}`
-    );
-  return url.href;
+  return assetUrl("worker.js", assetPath);
 }
 async function runInWorker(input, options) {
   if (typeof Worker === "undefined")
@@ -424,8 +464,10 @@ async function runInWorker(input, options) {
       "unsupported-option",
       "this environment has no Worker; run with worker: false"
     );
-  const worker = new Worker(workerUrl(options.assetPath), { type: "module" });
+  const url = workerUrl(options.assetPath);
+  const worker = new Worker(url, { type: "module" });
   const { device, glContext, onLog, worker: _w, ...rest } = options;
+  if (rest.assetPath !== void 0) rest.assetPath = new URL("./", url).href;
   let timer;
   try {
     return await new Promise((resolve, reject2) => {
@@ -449,6 +491,10 @@ async function runInWorker(input, options) {
       worker.onerror = (event) => reject2(new BrainchopError(
         "inference-failed",
         `the segmentation worker failed to start or threw: ${event.message ?? "unknown"}`
+      ));
+      worker.onmessageerror = () => reject2(new BrainchopError(
+        "inference-failed",
+        "the segmentation worker sent a message that could not be deserialized"
       ));
       const named = options.backend && options.backend !== "auto" ? options.backend : null;
       const limit = options.timeoutMs ?? (named && named !== "cpu" ? 12e4 : CPU_TIMEOUT_MS);
@@ -481,7 +527,7 @@ async function acquire(options) {
     return { backend: "webgl2", glContext: options.glContext, ownsContext: false };
   const want = options.backend ?? "auto";
   if (want === "webgpu")
-    return { backend: "webgpu", device: await acquireDevice(), ownsContext: false };
+    return { backend: "webgpu", device: await acquireDevice(options.model), ownsContext: false };
   if (want === "webgl2")
     return { backend: "webgl2", glContext: acquireGlContext(), ownsContext: true };
   if (want === "cpu") {
@@ -490,9 +536,9 @@ async function acquire(options) {
       throw new BrainchopError("no-webgpu", `the cpu backend cannot run here: ${cpu2.reasons.join("; ")}`);
     return { backend: "cpu", ownsContext: false };
   }
-  const gpu = await checkSupport();
+  const gpu = await checkSupport(options.model);
   if (gpu.supported)
-    return { backend: "webgpu", device: await acquireDevice(), ownsContext: false };
+    return { backend: "webgpu", device: await acquireDevice(options.model), ownsContext: false };
   const gl = checkWebgl2Support();
   if (gl.supported)
     return { backend: "webgl2", glContext: acquireGlContext(), ownsContext: true };
