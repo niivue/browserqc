@@ -169,7 +169,32 @@ async function fetchFile(url: string, name: string): Promise<File> {
 // module owns conform → parcellation → back-projection, and hands back a label
 // NIfTI already on the input's own grid. The module is import()ed on first use.
 
-// The "Subcortical + GWM" (16chan18cls) label colormap — 18 FreeSurfer-style labels
+type SegModel = '16chan18cls' | 'mindmap'
+
+/** Shown in the status line and recorded in the report's provenance. */
+const MODEL_LABEL: Record<SegModel, string> = {
+  '16chan18cls': 'Subcortical + GWM, 16ch',
+  mindmap: 'Subcortical + GWM, 24ch',
+}
+
+/*
+ * Which model to run. Read at segmentation time rather than cached, so changing
+ * the picker takes effect on the next run without a page reload. `lastModel` is
+ * what the FINISHED run used, which is what provenance must name -- reading the
+ * picker there would mislabel a report if it moved mid-run.
+ */
+function selectedModel(): SegModel {
+  const pick = document.getElementById('modelPick') as HTMLSelectElement | null
+  return pick?.value === 'mindmap' ? 'mindmap' : '16chan18cls'
+}
+let lastModel: SegModel = '16chan18cls'
+
+/* The image the last run used, so changing the model can re-run on it rather
+   than waiting for the next load -- a picker whose effect is invisible until
+   you happen to open another image is worse than no picker. */
+let lastFile: File | null = null
+
+// The label colormap — 18 FreeSurfer-style labels, identical for both models
 // (background + the 17 regions). App config, not shipped by the package; inlined
 // (it's tiny) so there's no served asset.
 // rc.9 wants I (label value per entry) and A (alpha) alongside R/G/B — label 0 is
@@ -246,7 +271,9 @@ async function computeQc(segBytes: Uint8Array, t1: Uint8Array): Promise<void> {
   )
   if (bidsMeta) report.bids_meta = bidsMeta
   // niimath records only itself; name the model that produced the labels it scored.
-  Object.assign(report.provenance as object, { segmentation: 'brainchop model16chan18cls (Subcortical + GWM)' })
+  Object.assign(report.provenance as object, {
+    segmentation: `brainchop ${lastModel} (${MODEL_LABEL[lastModel]})`,
+  })
   lastReport = report
   // Automation seam: the panel renders 3 significant figures, so expose the full
   // report at full precision for cli/qc.mjs, which drives this page headlessly.
@@ -257,6 +284,7 @@ async function computeQc(segBytes: Uint8Array, t1: Uint8Array): Promise<void> {
 
 // Load `file` as the displayed volume, segment it, and QC the result.
 async function runSegment(file: File): Promise<void> {
+  lastFile = file
   if (isCleanedUp) return // a job queued before cleanup() (HMR) must not touch a dead nv
   spin(true)
   busy = true
@@ -274,7 +302,16 @@ async function runSegment(file: File): Promise<void> {
     await nv.loadVolumes([{ url: file, name: file.name } as ImageFromUrlOptions])
     if (isCleanedUp) return
 
-    setStatus('Segmenting (Subcortical + GWM)… first run downloads the model')
+    /*
+     * The two models emit the SAME 18 labels with a byte-identical colormap, so
+     * the overlay, the label table and every QC metric are unaffected by this
+     * choice -- only which weights run. The 24-channel one scores better
+     * upstream and costs roughly 1.6x on WebGPU and 2.7x on the WebGL2
+     * fallback, which is why it is opt-in rather than the default.
+     */
+    const model = selectedModel()
+    lastModel = model
+    setStatus(`Segmenting (${MODEL_LABEL[model]})… first run downloads the model`)
     const { segment } = await import('@brainchop/mindgrab')
     /*
      * `?backend=webgl2` forces the fallback, and without it the fallback is
@@ -295,7 +332,7 @@ async function runSegment(file: File): Promise<void> {
     if (!(t1 instanceof Uint8Array)) throw new Error('could not serialize the input volume')
     const seg = await withTimeout(
       segment(t1, {
-        model: '16chan18cls',
+        model,
         // Staged into public/brainchop/ by scripts/copy-brainchop.mjs (dev+build):
         // the glue finds its own .wasm via its own import.meta.url, so the pair
         // must stay adjacent and unhashed — public/ preserves names, a bundler
@@ -492,6 +529,11 @@ dicomPick.addEventListener(
     const file = dcmConverted[Number(dicomPick.value)]
     if (file) enqueue(() => runSegment(file))
   },
+  ac,
+)
+$<HTMLSelectElement>('modelPick').addEventListener(
+  'change',
+  () => { if (lastFile) enqueue(() => runSegment(lastFile as File)) },
   ac,
 )
 aboutBtn.addEventListener('click', () => aboutDialog.showModal(), ac)
