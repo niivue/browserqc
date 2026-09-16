@@ -17,7 +17,7 @@
     "test:e2e": "npm run build && node test/smoke.mjs"
   },
   "dependencies": {
-    "@brainchop/mindgrab": "0.1.20260813",
+    "@brainchop/mindgrab": "0.1.20260916",
     "@niivue/dcm2niix": "^1.2.0",
     "@niivue/niimath": "1.4.20260909",
     "@niivue/niivue": "1.0.0-rc.9"
