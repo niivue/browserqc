@@ -15,7 +15,8 @@ var BrainchopError = class extends Error {
 var MODEL_CHANNELS = {
   mindgrab: 16,
   "16chan18cls": 16,
-  mindmap: 24
+  mindmap: 24,
+  "mindsnap": 24
 };
 function activationBytes(model) {
   return 256 * 256 * 256 * MODEL_CHANNELS[model] * 2;
@@ -88,8 +89,12 @@ async function acquireDevice(model = "16chan18cls") {
 }
 
 // src/webgl2.ts
-var GL_ACTIVATION_BYTES = ACTIVATION_BYTES * 2;
+function glActivationBytes(model) {
+  return activationBytes(model) * 2;
+}
+var GL_ACTIVATION_BYTES = glActivationBytes("16chan18cls");
 var DIM = 256;
+var PLANE_BYTES = DIM * DIM * DIM * 4 * 2;
 var LABEL_W = 2048;
 var MiB2 = (n) => `${Math.round(n / (1024 * 1024))} MiB`;
 function newContext() {
@@ -104,7 +109,7 @@ function newContext() {
     powerPreference: "high-performance"
   });
 }
-function checkWebgl2Support() {
+function checkWebgl2Support(model = "16chan18cls") {
   const gl = newContext();
   if (!gl)
     return {
@@ -124,8 +129,9 @@ function checkWebgl2Support() {
   const viewport = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
   if (max3d < DIM)
     reasons.push(`MAX_3D_TEXTURE_SIZE is ${max3d}, but the model needs ${DIM}`);
-  if (drawBuffers < 4 || attachments < 4)
-    reasons.push(`this device allows ${drawBuffers} draw buffers and ${attachments} colour attachments, but the model writes 4 at once`);
+  const planes = activationBytes(model) / PLANE_BYTES;
+  if (drawBuffers < planes || attachments < planes)
+    reasons.push(`this device allows ${drawBuffers} draw buffers and ${attachments} colour attachments, but ${model} writes ${planes} at once`);
   if (maxTexture < LABEL_W || viewport[0] < LABEL_W || viewport[1] < LABEL_W)
     reasons.push(`MAX_TEXTURE_SIZE is ${maxTexture} and MAX_VIEWPORT_DIMS ${viewport[0]}x${viewport[1]}, but the label texture is ${LABEL_W}x${LABEL_W}`);
   let allocates;
@@ -138,7 +144,7 @@ function checkWebgl2Support() {
     allocates = gl.getError() === gl.NO_ERROR && !gl.isContextLost();
     gl.deleteTexture(tex);
     if (!allocates)
-      reasons.push(`this device could not allocate even one ${MiB2(ACTIVATION_BYTES / 4)} activation plane; a run needs ${MiB2(GL_ACTIVATION_BYTES)} of them`);
+      reasons.push(`this device could not allocate even one ${MiB2(PLANE_BYTES)} activation plane; a ${model} run needs ${MiB2(glActivationBytes(model))} of them`);
   }
   gl.getExtension("WEBGL_lose_context")?.loseContext();
   return {
@@ -211,19 +217,22 @@ var MODULE_FILE = {
   webgpu: {
     mindgrab: "./brainchop-mindgrab-gpu.js",
     "16chan18cls": "./brainchop-16chan18cls-gpu.js",
-    mindmap: "./brainchop-mindmap-gpu.js"
+    mindmap: "./brainchop-mindmap-gpu.js",
+    "mindsnap": "./brainchop-mindsnap-gpu.js"
   },
   webgl2: {
     mindgrab: "./brainchop-mindgrab-gl.js",
     "16chan18cls": "./brainchop-16chan18cls-gl.js",
-    mindmap: "./brainchop-mindmap-gl.js"
+    mindmap: "./brainchop-mindmap-gl.js",
+    "mindsnap": "./brainchop-mindsnap-gl.js"
   },
   // No suffix: the CPU modules are the plain `make wasm` output, and they are
   // the only ones built with -pthread.
   cpu: {
     mindgrab: "./brainchop-mindgrab.js",
     "16chan18cls": "./brainchop-16chan18cls.js",
-    mindmap: "./brainchop-mindmap.js"
+    mindmap: "./brainchop-mindmap.js",
+    "mindsnap": "./brainchop-mindsnap.js"
   }
 };
 var factories = /* @__PURE__ */ new Map();
@@ -360,7 +369,8 @@ async function run(request) {
       `the ${request.model} module exited with status ${code}`,
       log
     );
-  if (!module.FS.analyzePath("/out.nii").exists)
+  const primary = request.primaryOutput ?? "/out.nii";
+  if (!module.FS.analyzePath(primary).exists)
     throw new BrainchopError(
       "inference-failed",
       `the ${request.model} module exited cleanly but wrote no output`,
@@ -369,7 +379,7 @@ async function run(request) {
   const extras = /* @__PURE__ */ new Map();
   for (const path of request.extraOutputs ?? [])
     if (module.FS.analyzePath(path).exists) extras.set(path, module.FS.readFile(path));
-  return { image: module.FS.readFile("/out.nii"), extras, elapsedMs };
+  return { image: module.FS.readFile(primary), extras, elapsedMs };
 }
 
 // src/index.ts
@@ -409,6 +419,18 @@ var MODELS = {
       mask: false,
       border: false
     }
+  },
+  "mindsnap": {
+    name: "mindsnap",
+    description: "104-class Desikan-Killiany parcellation (24-channel, infant refit-synth)",
+    outputKind: "labels",
+    capabilities: {
+      ct: true,
+      comply: true,
+      saveConform: true,
+      mask: false,
+      border: false
+    }
   }
 };
 function reject(model, option, why) {
@@ -427,6 +449,11 @@ function buildArgs(options) {
   const args = [];
   if (options.ct) args.push("--ct");
   if (options.comply) args.push("--comply");
+  if (options.legacyCleanup) {
+    if (options.model !== "mindmap")
+      reject(options.model, "legacyCleanup", "this compatibility option is only for MindMap");
+    args.push("--legacy-cleanup");
+  }
   if (options.saveConform) {
     if (!model.capabilities.saveConform)
       reject(
@@ -458,7 +485,7 @@ function buildArgs(options) {
 function workerUrl(assetPath) {
   return assetUrl("worker.js", assetPath);
 }
-async function runInWorker(input, options) {
+async function runInWorker(input, options, tissueMode = false) {
   if (typeof Worker === "undefined")
     throw new BrainchopError(
       "unsupported-option",
@@ -481,6 +508,7 @@ async function runInWorker(input, options) {
           resolve({
             image: message.image,
             mask: message.mask,
+            tissues: message.tissues,
             elapsedMs: message.elapsedMs,
             backend: message.backend
           });
@@ -502,7 +530,7 @@ async function runInWorker(input, options) {
         "inference-failed",
         `the segmentation did not finish within ${limit} ms`
       )), limit);
-      worker.postMessage({ input, options: rest });
+      worker.postMessage({ input, options: rest, tissueMode });
     });
   } finally {
     clearTimeout(timer);
@@ -521,8 +549,16 @@ async function acquire(options) {
       "unsupported-option",
       `backend: '${named}' was requested but a WebGL2RenderingContext was supplied; a context selects the webgl2 backend. Drop the glContext, or drop the backend.`
     );
-  if (options.device)
+  if (options.device) {
+    const need = activationBytes(options.model);
+    const { maxStorageBufferBindingSize, maxBufferSize } = options.device.limits;
+    if (maxStorageBufferBindingSize < need || maxBufferSize < need)
+      throw new BrainchopError(
+        "device-too-small",
+        `the supplied device allows ${Math.round(maxStorageBufferBindingSize / 1048576)} MiB per storage binding and ${Math.round(maxBufferSize / 1048576)} MiB per buffer, but ${options.model} needs ${Math.round(need / 1048576)} MiB for a single activation. Pass the model to acquireDevice(): acquireDevice('${options.model}').`
+      );
     return { backend: "webgpu", device: options.device, ownsContext: false };
+  }
   if (options.glContext)
     return { backend: "webgl2", glContext: options.glContext, ownsContext: false };
   const want = options.backend ?? "auto";
@@ -539,7 +575,7 @@ async function acquire(options) {
   const gpu = await checkSupport(options.model);
   if (gpu.supported)
     return { backend: "webgpu", device: await acquireDevice(options.model), ownsContext: false };
-  const gl = checkWebgl2Support();
+  const gl = checkWebgl2Support(options.model);
   if (gl.supported)
     return { backend: "webgl2", glContext: acquireGlContext(), ownsContext: true };
   const cpu = checkCpuSupport();
@@ -561,17 +597,30 @@ function checkCpuSupport() {
   return { supported: reasons.length === 0, reasons };
 }
 async function segment(input, options) {
+  return segmentInternal(input, options, false);
+}
+async function segmentTissues(input, options) {
+  const out = await segmentInternal(input, options, true);
+  if (!out.tissues) throw new BrainchopError("inference-failed", "missing tissue outputs");
+  return { tissues: out.tissues, elapsedMs: out.elapsedMs, backend: out.backend, ranInWorker: out.ranInWorker };
+}
+async function segmentInternal(input, options, tissueMode) {
   const raw = input instanceof ArrayBuffer ? new Uint8Array(input) : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
   if (raw.byteLength === 0)
     throw new BrainchopError("bad-input", "the input is empty");
   const { args, maskPath } = buildArgs(options);
+  if (tissueMode) {
+    if (options.model !== "mindmap" && options.model !== "16chan18cls" || options.mask || options.borderMm || options.legacyCleanup)
+      reject(options.model, "tissue fractions", "requires an 18-class model without mask or categorical cleanup options");
+    args.push("--pve");
+  }
   if (options.worker && (options.device || options.glContext))
     throw new BrainchopError(
       "unsupported-option",
       "worker cannot be combined with device or glContext: a GPUDevice and a WebGL2RenderingContext belong to the thread that created them and cannot cross into a worker"
     );
   if (options.worker) {
-    const out = await runInWorker(raw, options);
+    const out = await runInWorker(raw, options, tissueMode);
     const result2 = {
       image: out.image,
       elapsedMs: out.elapsedMs,
@@ -579,6 +628,7 @@ async function segment(input, options) {
       ranInWorker: true
     };
     if (out.mask) result2.mask = out.mask;
+    if (out.tissues) result2.tissues = out.tissues;
     return result2;
   }
   const compressed = isGzip(raw);
@@ -594,7 +644,8 @@ async function segment(input, options) {
       glContext,
       input: bytes,
       args,
-      extraOutputs: maskPath ? [maskPath] : [],
+      primaryOutput: tissueMode ? "/out_gm.nii" : void 0,
+      extraOutputs: tissueMode ? ["/out_wm.nii", "/out_csf.nii"] : maskPath ? [maskPath] : [],
       assetPath: options.assetPath,
       timeoutMs: options.timeoutMs,
       onLog: options.onLog
@@ -614,6 +665,11 @@ async function segment(input, options) {
   };
   const mask = maskPath ? result.extras.get(maskPath) : void 0;
   if (mask) segmented.mask = await pack(mask);
+  if (tissueMode) {
+    const wm = result.extras.get("/out_wm.nii"), csf = result.extras.get("/out_csf.nii");
+    if (!wm || !csf) throw new BrainchopError("inference-failed", "missing WM/CSF output");
+    segmented.tissues = { gm: segmented.image, wm: await pack(wm), csf: await pack(csf) };
+  }
   return segmented;
 }
 
@@ -621,17 +677,20 @@ async function segment(input, options) {
 self.onmessage = async (event) => {
   const post = (message, transfer = []) => self.postMessage(message, transfer);
   try {
-    const result = await segment(event.data.input, {
+    const options = {
       ...event.data.options,
-      // Logs cannot be a callback across the boundary, so they are streamed.
       onLog: (line) => post({ type: "log", line })
-    });
+    };
+    const tissue = event.data.tissueMode ? await segmentTissues(event.data.input, options) : null;
+    const result = tissue ? { ...tissue, image: tissue.tissues.gm, mask: void 0 } : await segment(event.data.input, options);
     const transfer = [result.image];
     if (result.mask) transfer.push(result.mask);
+    if (tissue) transfer.push(tissue.tissues.wm, tissue.tissues.csf);
     post({
       type: "done",
       image: result.image,
       mask: result.mask,
+      tissues: tissue?.tissues,
       elapsedMs: result.elapsedMs,
       backend: result.backend
     }, transfer);

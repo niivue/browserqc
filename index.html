@@ -7,7 +7,7 @@
   <!-- empty favicon: suppress the browser's default /favicon.ico request (404) -->
   <link rel="icon" href="data:," />
   <title>BrowserQC</title>
-  <script type="module" crossorigin src="/assets/index-Bea32W4s.js"></script>
+  <script type="module" crossorigin src="/assets/index--LHw87mK.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-CS7T1IBY.css">
 </head>
 
@@ -27,8 +27,9 @@
       <div class="qc-opacity">
         <label for="modelPick">Model</label>
         <select id="modelPick" aria-label="Segmentation model">
-          <option value="16chan18cls" selected>Subcortical + GWM (16ch)</option>
-          <option value="mindmap">Subcortical + GWM (24ch, experimental)</option>
+          <option value="16chan18cls" selected>fast 16chan18cls</option>
+          <option value="mindmap">mindmap 24chan18cls</option>
+          <option value="mindsnap">mindsnap 24chan104cls</option>
         </select>
       </div>
       <div class="qc-opacity">
@@ -66,7 +67,7 @@
         <li><strong>Segmentation</strong> — a
           <a href="https://github.com/neuroneural/brainchop" target="_blank" rel="noopener">brainchop</a>
           deep-learning model parcellates the brain into 17 gray/white-matter and
-          subcortical regions, shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
+          subcortical regions (or 103 Desikan-Killiany regions with mindsnap), shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
           slider)</li>
         <li><strong>Quality metrics</strong> — <a href="https://github.com/rordenlab/niimath" target="_blank"
             rel="noopener">niimath</a> computes MRIQC-style image-quality metrics (CJV, CNR, SNR, WM2MAX, EFC,
