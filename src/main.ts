@@ -17,7 +17,8 @@ import NiiVueGPU, {
 } from '@niivue/niivue'
 import { runDcm2niix, traverseDataTransferItems } from './dcm2niix/index'
 import { Niimath } from '@niivue/niimath'
-import { CSF_LABELS, WM_LABELS, bindSidecar, renderQc } from './qc'
+import { TISSUE_LABELS, bindSidecar, renderQc } from './qc'
+import mindsnapColormap from './mindsnap-colormap.json'
 import type { QcMetrics, QcReport } from './qc'
 
 const T1_URL = `${import.meta.env.BASE_URL}t1_crop.nii.gz`
@@ -169,12 +170,13 @@ async function fetchFile(url: string, name: string): Promise<File> {
 // module owns conform → parcellation → back-projection, and hands back a label
 // NIfTI already on the input's own grid. The module is import()ed on first use.
 
-type SegModel = '16chan18cls' | 'mindmap'
+type SegModel = '16chan18cls' | 'mindmap' | 'mindsnap'
 
 /** Shown in the status line and recorded in the report's provenance. */
 const MODEL_LABEL: Record<SegModel, string> = {
   '16chan18cls': 'Subcortical + GWM, 16ch',
   mindmap: 'Subcortical + GWM, 24ch',
+  mindsnap: 'Desikan-Killiany 104, 24ch',
 }
 
 /*
@@ -185,7 +187,8 @@ const MODEL_LABEL: Record<SegModel, string> = {
  */
 function selectedModel(): SegModel {
   const pick = document.getElementById('modelPick') as HTMLSelectElement | null
-  return pick?.value === 'mindmap' ? 'mindmap' : '16chan18cls'
+  const value = pick?.value
+  return value === 'mindmap' || value === 'mindsnap' ? value : '16chan18cls'
 }
 let lastModel: SegModel = '16chan18cls'
 
@@ -194,9 +197,9 @@ let lastModel: SegModel = '16chan18cls'
    you happen to open another image is worse than no picker. */
 let lastFile: File | null = null
 
-// The label colormap — 18 FreeSurfer-style labels, identical for both models
-// (background + the 17 regions). App config, not shipped by the package; inlined
-// (it's tiny) so there's no served asset.
+// The 18-class colormap — FreeSurfer-style labels, identical for 16chan18cls and
+// mindmap (background + the 17 regions). App config, not shipped by the package;
+// inlined (it's tiny) so there's no served asset.
 // rc.9 wants I (label value per entry) and A (alpha) alongside R/G/B — label 0 is
 // background, hence transparent.
 const SEG_COLORMAP: ColorMap = {
@@ -207,6 +210,16 @@ const SEG_COLORMAP: ColorMap = {
   A: [0, ...Array(17).fill(255)],
   labels: ['Unknown', 'Cerebral-White-Matter', 'Cerebral-Cortex', 'Lateral-Ventricle', 'Inferior-Lateral-Ventricle', 'Cerebellum-White-Matter', 'Cerebellum-Cortex', 'Thalamus', 'Caudate', 'Putamen', 'Pallidum', '3rd-Ventricle', '4th-Ventricle', 'Brain-Stem', 'Hippocampus', 'Amygdala', 'Accumbens-area', 'VentralDC'],
 }
+
+// mindsnap's 104 Desikan-Killiany labels, verbatim from brainchop-test's
+// model24chan104cls_infant_refit_synth/colormap.json; bundled by the JSON import.
+const MINDSNAP_COLORMAP: ColorMap = {
+  ...mindsnapColormap,
+  I: [...Array(104).keys()],
+  A: [0, ...Array(103).fill(255)],
+}
+
+const is104 = (model: SegModel): boolean => model === 'mindsnap'
 
 // Post a raw job straight to the niimath worker: run any argv and read `outName`
 // back as bytes. The wrapper's chain run() only models image→ops→image, but --qc
@@ -241,6 +254,7 @@ function runNiimathRaw(cmd: string[], files: File[], outName: string): Promise<U
 const TEMPLATE_URL = `${import.meta.env.BASE_URL}avg152T1.nii.gz`
 
 async function runNiimathQc(t1: File, seg: File): Promise<QcReport> {
+  const tissues = TISSUE_LABELS[is104(lastModel) ? 104 : 18]
   const worker = niimathWorker()
   if (!worker) throw new Error('niimath worker unavailable')
   const template = await fetchFile(TEMPLATE_URL, 'avg152T1.nii.gz')
@@ -248,7 +262,7 @@ async function runNiimathQc(t1: File, seg: File): Promise<QcReport> {
   if (worker !== niimathWorker()) throw new Error('QC cancelled')
   const cmd = [
     '--qc', t1.name, '--seg', seg.name,
-    '--csf', CSF_LABELS.join(','), '--wm', WM_LABELS.join(','),
+    '--csf', tissues.csf.join(','), '--wm', tissues.wm.join(','),
     '--air', template.name, '--json', 'qc.json',
   ]
   const bytes = await runNiimathRaw(cmd, [t1, seg, template], 'qc.json')
@@ -303,11 +317,12 @@ async function runSegment(file: File): Promise<void> {
     if (isCleanedUp) return
 
     /*
-     * The two models emit the SAME 18 labels with a byte-identical colormap, so
-     * the overlay, the label table and every QC metric are unaffected by this
-     * choice -- only which weights run. The 24-channel one scores better
+     * The two 18-class models emit the SAME labels with a byte-identical
+     * colormap, so between them only the weights change. mindmap scores better
      * upstream and costs roughly 1.6x on WebGPU and 2.7x on the WebGL2
-     * fallback, which is why it is opt-in rather than the default.
+     * fallback, which is why it is opt-in rather than the default. mindsnap
+     * (104 Desikan-Killiany labels) swaps the colormap and the tissue grouping
+     * QC scores with.
      */
     const model = selectedModel()
     lastModel = model
@@ -374,7 +389,7 @@ async function runSegment(file: File): Promise<void> {
     if (isCleanedUp) return
     segIndex = nv.volumes.length - 1
 
-    await nv.setColormapLabel(segIndex, SEG_COLORMAP)
+    await nv.setColormapLabel(segIndex, is104(model) ? MINDSNAP_COLORMAP : SEG_COLORMAP)
     // Scene mutation is done. Apply the latest slider value first — a drag during the
     // locked window updated the control but the handler dropped it, so `addVolume`'s
     // sampled opacity may be stale — then release the lock so subsequent drags land

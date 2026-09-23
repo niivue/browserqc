@@ -6,16 +6,23 @@
  * fractions, per-tissue volume/intensity summaries, background statistics). It classifies every voxel as CSF / GM /
  * WM: we pass the CSF and WM label values, and every other non-zero label is GM.
  *
- * The label→tissue mapping is FIXED for the "Subcortical + GWM" model
- * (16chan18cls) — the model always emits the same 18 labels, so
- * we hard-code the grouping rather than parse names at runtime:
+ * The label→tissue mapping is FIXED per label set — each model always emits the
+ * same labels, so we hard-code the grouping rather than parse names at runtime.
+ * The two 18-class models (16chan18cls, mindmap) share one set:
  *   CSF = ventricles          → 3 Lateral, 4 Inferior-Lateral, 11 3rd, 12 4th
  *   WM  = white matter        → 1 Cerebral-WM, 5 Cerebellum-WM
- *   GM  = everything else non-zero (cortex + deep-GM nuclei + brainstem, etc.)
+ * mindsnap's 104 Desikan-Killiany labels (src/mindsnap-colormap.json):
+ *   CSF = 87-92 ventricles + 93 CSF
+ *   WM  = 85/86 cerebral WM, 95/96 cerebellar WM, 99-103 corpus callosum (the
+ *         18-class models count the callosum inside Cerebral-WM)
+ * GM = everything else non-zero: the 68 ctx-* cortical labels, deep-GM nuclei,
+ * cerebellar cortex, brainstem.
  */
 
-export const CSF_LABELS = [3, 4, 11, 12]
-export const WM_LABELS = [1, 5]
+export const TISSUE_LABELS = {
+  18: { csf: [3, 4, 11, 12], wm: [1, 5] },
+  104: { csf: [87, 88, 89, 90, 91, 92, 93], wm: [85, 86, 95, 96, 99, 100, 101, 102, 103] },
+}
 
 /** Column-keyed numeric values in niimath's `--qc` JSON report. */
 export type QcMetrics = Record<string, number>

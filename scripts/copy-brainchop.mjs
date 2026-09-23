@@ -10,7 +10,7 @@
 // Runs before dev/build via `&&` (not an npm pre-script: bun and npm disagree
 // about those). public/brainchop/ is gitignored — staged, not committed.
 //
-// The two 18-class models, and only their WebGPU + WebGL2 pairs. The package
+// The three segmentation models, and only their WebGPU + WebGL2 pairs. The package
 // also ships the mindgrab model and a threaded-CPU build of each; this app runs
 // neither. The CPU build needs a cross-origin-isolated page (COOP/COEP) that
 // GitHub Pages can't provide, so `auto` never reaches it here — no 404, and no
@@ -30,6 +30,8 @@ const files = [
   'brainchop-16chan18cls-gl.js', 'brainchop-16chan18cls-gl.wasm',
   'brainchop-mindmap-gpu.js', 'brainchop-mindmap-gpu.wasm',
   'brainchop-mindmap-gl.js', 'brainchop-mindmap-gl.wasm',
+  'brainchop-mindsnap-gpu.js', 'brainchop-mindsnap-gpu.wasm',
+  'brainchop-mindsnap-gl.js', 'brainchop-mindsnap-gl.wasm',
 ]
 
 rmSync(to, { recursive: true, force: true }) // else files a version bump renames linger and ship

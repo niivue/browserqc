@@ -8,7 +8,7 @@ Live demo: [browserqc.org](https://browserqc.org).
 
 Everything runs in WebAssembly + WebGPU (WebGL2 fallback) on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
 
-1. **Segment** — [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) runs the [brainchop](https://github.com/neuroneural/brainchop) `model16chan18cls` ("Subcortical + GWM") model, parcellating the brain into 17 gray/white-matter and subcortical regions. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module — on WebGPU where available, WebGL2 otherwise (so no WebGPU is required).
+1. **Segment** — [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) runs a [brainchop](https://github.com/neuroneural/brainchop) model picked from the **Model** menu: `16chan18cls` (fast, default) or `mindmap` (24-channel), each parcellating the brain into 17 gray/white-matter and subcortical regions, or `mindsnap` (24-channel), 103 Desikan-Killiany cortical and subcortical regions. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module — on WebGPU where available, WebGL2 otherwise (so no WebGPU is required).
 2. **Back-project** — the labels are resliced onto the native input grid and drawn as a colour overlay on the original scan (adjust with the **Opacity** slider).
 3. **Quality control** — [niimath](https://github.com/rordenlab/niimath) computes MRIQC-style anatomical image-quality metrics from the scan and its segmentation, shown in the side panel:
    - **CJV** — coefficient of joint variation (noise + intensity non-uniformity); lower is better

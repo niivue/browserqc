@@ -49,8 +49,16 @@ engine (`inference-logic.js`, `tensor-utils.js`, `bwlabels.js`,
 `brainchop-webworker.js`, `brainchop-parameters.js`, `diagnostic-stats.js`; 4.2k with
 `segment.ts` and `reslice.ts`) plus `@tensorflow/tfjs` and
 `@niivue/nv-ext-image-processing`. Weights are compiled into the module — there
-is no separate weights file to serve, and the label colormap is inlined in
-`main.ts` (`SEG_COLORMAP`, 18 labels: background + the 17 regions).
+is no separate weights file to serve. The colormaps are app config: the 18-class
+one is inlined in `main.ts` (`SEG_COLORMAP`, background + 17 regions, shared by
+`16chan18cls` and `mindmap`); mindsnap's 104 labels are
+[src/mindsnap-colormap.json](src/mindsnap-colormap.json), copied verbatim from
+`brainchop-test`'s `model24chan104cls_infant_refit_synth/colormap.json` and
+bundled by a JSON import (`resolveJsonModule`), so there is still no served asset.
+
+**Three models, from the `#modelPick` menu**: `16chan18cls` (fast, default),
+`mindmap` (24-channel, 18 classes) and `mindsnap` (24-channel, 104
+Desikan-Killiany classes). Changing the pick re-runs on the current image.
 
 **It does conform, inference AND back-projection.** `segment()` returns a label
 NIfTI (uint8, `intent_code` 1002) already on the input's own grid, so the whole
@@ -76,10 +84,10 @@ computed URL, and each glue file finds its own `.wasm` through its own
 `import.meta.url` — so a bundler can neither rewrite the import nor emit the
 assets, and the pair must stay adjacent and unhashed. `public/` preserves names
 in dev and build alike, so [`scripts/copy-brainchop.mjs`](scripts/copy-brainchop.mjs)
-copies the `16chan18cls` WebGPU + WebGL2 pairs and `worker.js` from `node_modules`
-into `public/brainchop/` (gitignored) before every `dev`/`build`, and `main.ts`
-points `assetPath` there. Only that one model, only its two backend pairs — the
-mindgrab model and the CPU builds stay in `node_modules`. The script wipes the
+copies the three segmentation models' WebGPU + WebGL2 pairs and `worker.js` from
+`node_modules` into `public/brainchop/` (gitignored) before every `dev`/`build`,
+and `main.ts` points `assetPath` there. Only those backend pairs — the mindgrab
+model and the CPU builds stay in `node_modules`. The script wipes the
 directory first, so a file a version bump renames cannot linger and ship. Same
 class of problem as the niimath/dcm2niix `optimizeDeps.exclude` workaround.
 `@brainchop/mindgrab` itself is **exact-pinned** (no caret): the publisher puts
@@ -88,7 +96,7 @@ of opaque wasm running with full page privileges — a silent `npm install` away
 
 **Flow** (`runSegment(file)` in [src/main.ts](src/main.ts)): `nv.loadVolumes([file])`
 (display) → `nv.saveVolume(volumes[0])` → `segment(t1, {model:'16chan18cls', worker:true})` →
-`addVolume` → `setColormapLabel(idx, SEG_COLORMAP)` (an rc.9 `ColorMap` literal:
+`addVolume` → `setColormapLabel(idx, SEG_COLORMAP or MINDSNAP_COLORMAP)` (an rc.9 `ColorMap` literal:
 `A`+`I` alongside `R`/`G`/`B`; label 0 alpha 0) → QC. The overlay is native-grid labels (verified on the
 default 192×256×201 · 0.9 mm `t1_crop`, genuinely non-256³ so the back-projection
 does real work). The **Opacity** slider (`#ovlSlider`) drives the overlay's
@@ -122,7 +130,7 @@ Median |Δ| across all shared metrics is **1.6 %**. End-to-end run time went
 After the overlay is displayed, [src/main.ts](src/main.ts) `computeQc` runs niimath's `--qc --air --json` (MRIQC-style anatomical IQMs: CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions and per-tissue volumes) on the **native** T1 + the **native-space** segmentation and fills the right-side [#qcPanel](index.html).
 
 - **Matching grids (requirement).** `--qc` demands the T1 and segmentation share a voxel grid. We serialize the T1 with `nv.saveVolume({volumeByIndex:0, filename:''})` (bytes, no download) so it comes from the **same** `volumes[0]` geometry the native segmentation was built from — they align by construction.
-- **Fixed tissue labels.** `--qc` classifies each voxel CSF/GM/WM from the label values we pass; the "Subcortical + GWM" model always emits the same 18 labels, so [src/qc.ts](src/qc.ts) hard-codes `CSF_LABELS = [3,4,11,12]` (ventricles), `WM_LABELS = [1,5]` (cerebral + cerebellar WM); every other non-zero label is GM. No runtime name parsing.
+- **Fixed tissue labels, per label set.** `--qc` classifies each voxel CSF/GM/WM from the label values we pass. [src/qc.ts](src/qc.ts) `TISSUE_LABELS` hard-codes two sets: the 18-class models (`16chan18cls`, `mindmap`) use CSF `[3,4,11,12]` (ventricles) and WM `[1,5]` (cerebral + cerebellar WM); `mindsnap`'s 104 Desikan-Killiany labels use CSF `87–93` (ventricles + CSF) and WM `85,86,95,96` plus the corpus callosum `99–103`, which the 18-class models count inside Cerebral-WM. Every other non-zero label — including the 68 `ctx-*` cortical labels — is GM. No runtime name parsing. On the default image the three models give GM 749/728/703, WM 493/495/494, CSF 26.3/27.0/26.4 cm³, so the 104-class grouping agrees with the 18-class one.
 - **WASM invocation (the gotcha).** `--qc` isn't a chain op (image→ops→image) — it takes its own argv and writes JSON. The wrapper's `run()` can't express that, so **`runNiimathRaw`** posts a raw job **straight to the niimath Web Worker** (via the wrapper's private `worker` field — see "niimath" below). The worker stages `blob` + `extraFiles` into MEMFS, runs `cmd` argv through `callMain`, and reads `outName` back as bytes. `runNiimathQc` fetches `avg152T1`, checks that a timed-out call has not reset the worker, then runs `--qc --air --json`. Safe against the wrapper's per-run `onmessage` swap because the single-flight queue serializes all niimath work.
 - **Report + Save.** niimath emits the MRIQC-style report: metrics flat at top level + `size_*`/`spacing_*` + `provenance`. BrowserQC appends optional `bids_meta` and `provenance.segmentation` (niimath names only itself), exposes the result at full precision as `window.browserqcMetrics` (the CLI's seam), and downloads it through **Save**. `bids_meta` comes from a dropped `.json` sidecar, bound to the *current* image (never a leftover — see `stagedSidecar`); dcm2niix-generated sidecars are **not** auto-paired yet (drop the `.json` yourself, or use `--bids`).
 - **Panel lifecycle.** Empty on load; cleared at the top of every `runSegment` (which also clears `window.browserqcMetrics`); populated when niimath's JSON parses. Hidden below 720 px (`#qcPanel` in [src/style.css](src/style.css)).

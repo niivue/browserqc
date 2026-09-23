@@ -19,7 +19,12 @@ export default defineConfig({
   // .vite/deps. Exclude them so the worker stays a standalone module whose runtime
   // URL resolves. (Production `vite build` uses Rollup and handles it either way;
   // this is dev-mode only.)
+  //
+  // @brainchop/mindgrab for a different reason: the prebundle cache is keyed on
+  // the lockfile, and a stale copy (still offering only its first two models)
+  // outlived a package upgrade and refused 'mindmap'/'mindsnap' in dev only.
+  // Its dist is already plain ESM, so serving it unbundled costs nothing.
   optimizeDeps: {
-    exclude: ['@niivue/dcm2niix', '@niivue/niimath'],
+    exclude: ['@niivue/dcm2niix', '@niivue/niimath', '@brainchop/mindgrab'],
   },
 })
