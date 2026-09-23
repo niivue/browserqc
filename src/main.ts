@@ -19,6 +19,7 @@ import { runDcm2niix, traverseDataTransferItems } from './dcm2niix/index'
 import { Niimath } from '@niivue/niimath'
 import { TISSUE_LABELS, bindSidecar, renderQc } from './qc'
 import mindsnapColormap from './mindsnap-colormap.json'
+import { version as brainchopVersion } from '@brainchop/mindgrab/package.json'
 import type { QcMetrics, QcReport } from './qc'
 
 const T1_URL = `${import.meta.env.BASE_URL}t1_crop.nii.gz`
@@ -348,11 +349,13 @@ async function runSegment(file: File): Promise<void> {
     const seg = await withTimeout(
       segment(t1, {
         model,
-        // Staged into public/brainchop/ by scripts/copy-brainchop.mjs (dev+build):
-        // the glue finds its own .wasm via its own import.meta.url, so the pair
+        // Staged into public/brainchop/<version>/ by scripts/copy-brainchop.mjs
+        // (dev+build); the version in the path keeps a cached old worker.js from
+        // running against a newer page after a deploy.
+        // The glue finds its own .wasm via its own import.meta.url, so the pair
         // must stay adjacent and unhashed — public/ preserves names, a bundler
         // would rewrite one and hash the other.
-        assetPath: `${import.meta.env.BASE_URL}brainchop/`,
+        assetPath: `${import.meta.env.BASE_URL}brainchop/${brainchopVersion}/`,
         backend,
         // In a Worker, which is what keeps this page usable while it runs.
         // Measured with a rAF ticker: in-thread the WebGL2 fallback draws 3

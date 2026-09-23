@@ -85,9 +85,12 @@ computed URL, and each glue file finds its own `.wasm` through its own
 assets, and the pair must stay adjacent and unhashed. `public/` preserves names
 in dev and build alike, so [`scripts/copy-brainchop.mjs`](scripts/copy-brainchop.mjs)
 copies the three segmentation models' WebGPU + WebGL2 pairs and `worker.js` from
-`node_modules` into `public/brainchop/` (gitignored) before every `dev`/`build`,
+`node_modules` into `public/brainchop/<version>/` (gitignored) before every `dev`/`build`,
 and `main.ts` points `assetPath` there. Only those backend pairs — the mindgrab
-model and the CPU builds stay in `node_modules`. The script wipes the
+model and the CPU builds stay in `node_modules`. The version is in the path
+because these names never change while the page bundle is hashed, and Pages
+caches them for 10 minutes: right after the 0.1.20260923 deploy a browser ran the
+new page against its cached old `worker.js`, which refused `mindsnap`. The script wipes the
 directory first, so a file a version bump renames cannot linger and ship. Same
 class of problem as the niimath/dcm2niix `optimizeDeps.exclude` workaround.
 `@brainchop/mindgrab` itself is **exact-pinned** (no caret): the publisher puts
@@ -170,6 +173,6 @@ Two consequences, both accepted: niimath still emits `cnr_noair` beside the air-
 - **HMR dev-only limitation.** An already-running inference/conversion finishes after `cleanup()`; the execution-time + `runSegment`-entry `isCleanedUp` guards keep it from touching a destroyed NiiVue. Not worth cross-pipeline cancellation.
 - **CLI error gate.** `cli/qc.mjs` fails (exit 1, no output written) on any page/console error — the app is expected to run clean (the smoke gates on the same signal), so a page error means the result may be wrong.
 - **dcm2niix sidecars not auto-paired.** `runDcm2niix` drops generated `.json`. A user-dropped sidecar is retained only when conversion yields one series; multi-series selection omits `bids_meta` because one sidecar cannot be paired safely. The CLI accepts an explicit `--bids`. Per-series pairing is a deferred enhancement (untested against real DICOM).
-- **22 kB of dead worker JS ships (accepted).** Vite resolves the literal `new URL('./worker.js', import.meta.url)` in the `!assetPath` branch of mindgrab's `workerUrl()` and emits a chunk for it. We always pass `assetPath`, so the worker actually loaded is `public/brainchop/worker.js` and the chunk is unreachable. Size wart only; not worth patching the package.
+- **22 kB of dead worker JS ships (accepted).** Vite resolves the literal `new URL('./worker.js', import.meta.url)` in the `!assetPath` branch of mindgrab's `workerUrl()` and emits a chunk for it. We always pass `assetPath`, so the worker actually loaded is `public/brainchop/<version>/worker.js` and the chunk is unreachable. Size wart only; not worth patching the package.
 - **The CPU backend is deliberately not staged.** `backend:'auto'` falls through to CPU only on a cross-origin-isolated page (COOP/COEP), which GitHub Pages can't set — so the omitted `brainchop-16chan18cls.js/.wasm` can't 404 today. If COOP/COEP is ever added, stage that pair too.
 - **A GPU that suits neither backend shows a technical message.** `backend: 'auto'` demotes a `shader-f16`-less / too-small adapter to WebGL2 on its own, so only a machine where *both* fail throws; that surfaces the raw `BrainchopError` as `Failed: <code>` via the enqueue catch — graceful (no crash), but not friendly text. Mapping `BrainchopError.code` → friendly text is a deferred nicety.
