@@ -2,177 +2,80 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## What this is
 
-**BrowserQC** — browser-only automated MRI quality control. Drag in a NIfTI (or a DICOM folder) and it runs on its own: conform → deep-learning parcellation ("Subcortical + GWM") → back-project the labels onto the native scan as a colour overlay → niimath MRIQC-style quality metrics in a side panel. **No data leaves the machine** — everything runs in WebAssembly + WebGPU (WebGL2 fallback). There is no method picker and no Apply button: segmentation + QC run automatically whenever an image loads (startup + every drop).
+**BrowserQC** — browser-only automated MRI quality control. Drag in a NIfTI (or DICOM files/folders) and it runs on its own: deep-learning segmentation → overlay on the native scan → niimath MRIQC-style quality metrics in a side panel. **No data leaves the machine** — everything runs in WebAssembly + WebGPU (WebGL2 fallback). There is no Apply button: segmentation + QC run whenever an image loads (startup, every drop, every model or series change).
 
-**Keep it minimal.** This is a worked example meant to teach the concept — readable end to end. Prefer the smallest change that works. Don't add defensive code for cases that can't happen, speculative options, or abstractions for a single caller; bloat obscures the idea. Guard real failure paths, not imaginary ones.
+**Keep it minimal.** This is a worked example meant to teach the concept — readable end to end. It is built only from stock npm packages (the lean pattern of `../brainchop-next`); prefer the smallest change that works, no defensive code for cases that can't happen, no abstractions for a single caller.
 
 ## Commands
 
 ```bash
-npm run dev        # vite dev server on http://localhost:8091
-npm run build      # tsc --noEmit (typecheck) + vite build to dist/
-npm run typecheck  # tsc --noEmit only
-npm run preview    # serve the production build (port 4173)
-npm run test:unit  # node --test — the qc.ts sidecar state machine
-npm run test:e2e   # builds first, then headless-Chrome smoke (system Chrome)
+npm run dev         # vite dev server on http://localhost:8091
+npm run build       # tsc --noEmit (typecheck) + vite build to dist/
+npm run typecheck   # tsc --noEmit only
+npm run preview     # serve the production build (port 4173)
+npm run test:unit   # node --test — sidecar state machine + cli/qc.py wiring (stub executables; needs python3)
+npm run test:e2e    # build, then headless-Chrome smoke (system Chrome)
+npm run test:dicom  # build, then the DICOM series picker on ../bidsui's reproin sample (skips if absent)
+npm run test:parity # build, then web ⇄ native CLI parity (needs brainchop-* + niimath, $BROWSERQC_BIN)
 ```
 
-The linter is just `tsc`; "validate before commit" = typecheck + unit + build + smoke. `test:unit` uses Node's built-in runner (no dependency) on the sidecar state machine. `test:e2e` builds first (so it can't pass against a stale `dist`), boots `vite preview` (failing fast on a port clash, and refusing a stale server that won the port — `cli/qc.mjs` mirrors that check), and drives the real app in system Chrome with software WebGPU (`--use-gl=angle --enable-unsafe-swiftshader`). It loads the default image, waits for the **auto** segmentation + QC to complete, asserts the QC panel populated **and that `snrd_total` is a finite number** (the panel label always renders; the value is null when niimath's air mask is too small), drives the Opacity slider + About dialog, and **fails on any `console.error`/page error** — keep that gate meaningful (a handled capability-absence should `console.warn`, not `error`).
+The linter is just `tsc`; "validate before commit" = typecheck + unit + build + smoke (+ dicom/parity when the data/tools are present; CI runs only unit + build). `test/preview.mjs` is the shared harness: it boots `vite preview` (failing fast on a port clash and refusing a stale server that won the port), launches system Chrome with software WebGPU (`--use-gl=angle --enable-unsafe-swiftshader`), and its `newPage()` records every `console.error`/page error, which `finish()` turns into a failure in all three browser tests — keep that gate meaningful (a handled capability-absence should `console.warn`). The smoke waits for the default image's report, asserts the panel populated and `snrd_total` is finite, switches to PVE and waits for `provenance.pve`, then drives Opacity + About.
 
 ## Architecture
 
-Single-page app, no framework. [src/main.ts](src/main.ts) is the whole UI controller. There are no toolbar controls — the only UI is the canvas, the right-side QC panel (Opacity slider, Save button, About button), and the drag-drop / DICOM-picker. It wires four subsystems:
+Single page, no framework. [src/main.ts](src/main.ts) is the whole controller; [src/qc.ts](src/qc.ts) renders the panel and binds sidecars; [src/models.json](src/models.json) lists the four models with their tissue grouping, or for PVE the mindmap model whose fractions it uses (`"pve": "mindmap"`) — the one source for the page, the CLI and the parity test. The UI is the canvas, the right-side panel (Model, Series — shown only with ≥ 2 series —, Opacity, Save, About) and the series picker dialog. Packages, all exact-pinned:
 
-- **NiiVue** (`@niivue/niivue`) — renders volumes. Constructed eagerly, but `attachTo('gl1')` is deferred to `init()`, which try/catches `attachNiiVue()` (no `navigator.gpu` guard — NiiVue falls back to WebGL2, so a WebGPU-less browser still renders). Only when *both* renderers fail does it show a friendly message instead of an unhandled rejection.
-- **brainchop** (`@brainchop/mindgrab`, a wasm module) — the deep-learning parcellation. See "Segmentation".
-- **niimath** (`@niivue/niimath` 1.4.20260909, BSD build) — the QC metrics and air metrics (`--qc --air --json`), in a WASM worker.
-- **dcm2niix** ([src/dcm2niix/](src/dcm2niix/)) — converts dropped DICOM folders to NIfTI; drop traversal uses `webkitGetAsEntry()` and stamps `_webkitRelativePath` so dcm2niix groups by series.
+- **NiiVue** (`@niivue/niivue` 1.0.0-rc.16) — rendering. `attachTo` falls back to WebGL2; only when both renderers fail does init show a message (`console.warn`, not error).
+- **mindgrab** (`@brainchop/mindgrab`) — segmentation, one wasm module per model with weights compiled in. Exact-pinned because the publisher puts the build date in the patch field: `^` would make every publish (~1 MB of opaque wasm with page privileges) a silent install away.
+- **niimath** (`@niivue/niimath`) — `image(t1).qc(tissues, air)` runs `--qc … --air … --json` in its worker and resolves to the parsed report.
+- **nv-ext-dcm2niix** (`@niivue/nv-ext-dcm2niix` 1.0.0-rc.14, peer of NiiVue rc.16) — `traverseDataTransferItems` + `runDcm2niix(files, {niftiOnly:false})`.
 
-**Auto-run flow.** Every image (the bundled default at startup, a dropped NIfTI, or a picked dcm2niix series) is passed to `runSegment(file)`, which is the whole pipeline: display it → segment (conform + inference + back-projection all inside the wasm module) → overlay → QC. See "Segmentation" + "QC".
+Vite: `worker.format: 'es'` (mindgrab's worker uses top-level await) and `optimizeDeps.exclude` for dcm2niix, nv-ext-dcm2niix, niimath, mindgrab (the dev prebundler moves them into `.vite/deps`, where their `new Worker(new URL(…))` workers and wasm no longer resolve). mindgrab is bundler-friendly — Vite emits and hashes each model's glue + wasm, so nothing is staged or copied.
 
-### Concurrency — single-flight (gotcha)
-Loads, drops, and segmentation runs must not overlap: everything is serialized through one promise chain (`enqueue`/`pending`). Required because (a) our raw niimath posts (see "QC") reassign the worker's one `onmessage` handler per job, so two overlapping jobs on the same worker cross-wire each other's results; and (b) NiiVue holds one displayed scene. One job at a time.
+### Flow (`run()`)
+`nv.loadVolumes([current])` → `t1 = nv.saveVolume({filename:''})` → `segment(t1, {model, worker:true, timeoutMs})` (or `segmentTissues` for PVE) → `addVolume` + `setColormapLabel(BRAINCHOP[model].colormap)` (mindgrab ships names + RGB; NiiVue fills in `I` and `A`, label 0 transparent — the cast is for its stricter type only) → `computeQc` → panel.
 
-### Worker recovery (gotcha)
-A failed niimath run can leave the worker heap + MEMFS in an undefined state. The QC step catches → `resetNiimathWorker()` (the wrapper's own `dispose()`, which terminates the worker, clears its ready flag and rejects anything in flight, plus our `niimathReady`) so the next QC spins up a fresh worker. A QC failure is **non-fatal** — the segmentation overlay stays up and the failure is reported in the status bar.
+**Feed mindgrab `nv.saveVolume(volumes[0])`, not the dropped file.** NiiVue may reorient on load and the module answers on the grid it is given, so this keeps the T1 and segmentation on one grid, which `--qc` requires (0.001 mm). The same `t1` bytes go to QC.
 
-**`cleanup()` terminates the worker FIRST, then does NOT await `pending`.** A niimath run is a single uninterruptible WASM call, so awaiting the queue on HMR/tab-close would stall teardown. `cleanup()` sets `isCleanedUp`, calls `resetNiimathWorker()` (killing any in-flight run — whose promise then never resolves, hence no await), then `nv.destroy()`s. Any run that *did* resolve hits `if (isCleanedUp) return` before touching `nv` — **including the one between the segmentation overlay and `computeQc`**: without it, `computeQc` would call `ensureNiimath()` with the cleared `niimathReady` and spin up a *fresh* worker after teardown.
+`?model=<id>` preselects a model (own keys only: `Object.hasOwn`, so `?model=toString` cannot break init); `?backend=webgl2|webgpu` forces mindgrab's backend (the only way to exercise the WebGL2 fallback on a WebGPU machine); the status line names the backend that ran.
 
-## Segmentation ("Subcortical + GWM")
+### Concurrency: a busy flag
+`setBusy` disables the Model and Series pickers and makes drops a no-op, so nothing overlaps and a run needs no stale-image checks. `openFiles` re-checks `busy` because the folder walk is asynchronous, and `init` skips the default image if a drop arrived while it downloaded (`busy || series.length`) — otherwise two runs interleaved and Save could name one subject's report after another. **Liveness:** every worker step is bounded — mindgrab by its own `timeoutMs` (with `worker:true` that terminates the worker), niimath and dcm2niix by `withTimeout` (60 s) — or a hung worker would leave `busy` set until reload. niimath is one instance per QC, `dispose()`d in `finally`, so a failed run cannot poison the next. On a dcm2niix timeout its worker is abandoned, not terminated (the extension owns it). No HMR teardown: a dev reload mid-run can leave a stray worker — dev only.
 
-Runs [brainchop](https://github.com/neuroneural/brainchop)'s default "Subcortical + GWM" model (id 3, `model16chan18cls` — a 16-channel gridding-free MeshNet, 17 regions: GWM + subcortical) and overlays the labels on the input. Ported from `brainchop-test`.
+### Drops and the series picker
+Files split three ways: `.json` sidecars; NiiVue `volumeExtensions`; everything else → dcm2niix (whose failure is ignored if the drop also held a volume — stray files). One image → run. Several → the picker: tiles of `SeriesNumber · SeriesDescription · echo suffix` and `dims · mm · N volumes` (shape from a little-endian NIfTI-1 header, first stream chunk), sorted by series number, the **largest single 3D volume focused as suggested**; nothing runs until one is picked. On the reproin XA60 sample: 34 folders → 19 series, suggested `5 · anat-T1w`.
 
-**One wasm module, from npm.** `@brainchop/mindgrab` is a C11 reimplementation of
-MeshNet compiled to WebAssembly with hand-written WGSL kernels
-([brainchopC](../brainchopC), `js/`). It replaced ~4.0k lines of vendored tfjs
-engine (`inference-logic.js`, `tensor-utils.js`, `bwlabels.js`,
-`brainchop-webworker.js`, `brainchop-parameters.js`, `diagnostic-stats.js`; 4.2k with
-`segment.ts` and `reslice.ts`) plus `@tensorflow/tfjs` and
-`@niivue/nv-ext-image-processing`. Weights are compiled into the module — there
-is no separate weights file to serve. The colormaps are app config: the 18-class
-one is inlined in `main.ts` (`SEG_COLORMAP`, background + 17 regions, shared by
-`16chan18cls` and `mindmap`); mindsnap's 104 labels are
-[src/mindsnap-colormap.json](src/mindsnap-colormap.json), copied verbatim from
-`brainchop-test`'s `model24chan104cls_infant_refit_synth/colormap.json` and
-bundled by a JSON import (`resolveJsonModule`), so there is still no served asset.
+**`bids_meta`** is bound to the image, never a leftover: an image's own sidecar (same basename — dcm2niix writes one per series), else — only when the drop has a single image — a dropped or staged sidecar (`bindSidecar`, unit-tested: a `.json` dropped alone is staged for the next image only).
 
-**Three models, from the `#modelPick` menu**: `16chan18cls` (fast, default),
-`mindmap` (24-channel, 18 classes) and `mindsnap` (24-channel, 104
-Desikan-Killiany classes). Changing the pick re-runs on the current image.
+### QC (`niimath --qc`)
+MRIQC-style anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions, per-tissue summaries, background stats) on the T1 + segmentation, with `--air public/avg152T1.nii.gz` for MRIQC's ArtifactMask metrics. Failure is non-fatal: the overlay stays and the status bar says why. BrowserQC adds `provenance.segmentation` and `bids_meta`, publishes the report as `window.browserqcMetrics` (full precision; the panel rounds to 3 s.f.; also what **Save** downloads) and the exact inputs as `window.browserqcInputs` — the test seams.
 
-**It does conform, inference AND back-projection.** `segment()` returns a label
-NIfTI (uint8, `intent_code` 1002) already on the input's own grid, so the whole
-conform → infer → reslice → write chain collapsed into one call. This is
-why `nv.volumeTransform.conform` and the ext that provided it are gone.
+- **Tissue grouping per label set** (`models.json`): 18-class (`16chan18cls`, `mindmap`) CSF `[3,4,11,12]` (ventricles), WM `[1,5]`; `mindsnap` CSF `87–93`, WM `85,86,95,96` + corpus callosum `99–103`. Every other non-zero label is GM. No runtime name parsing. On the default image the three give GM 749/728/703, WM 493/495/494, CSF 26.3/27.0/26.4 cm³. A judgement call (brainstem, deep GM count as GM) — fine for relative estimators.
+- **PVE (`mindmap-pve`)**: `segmentTissues` returns GM/WM/CSF fractions (uint8, `scl_slope` 1/255, CAT-lite fit on mindmap's priors), shown as three tinted overlays and scored with `--pve csf gm wm`. niimath then weights each voxel by its fraction as MRIQC's `summary_stats` does: weighted mean/stdv/p05/median/p95, `n` = Σw, MAD and kurtosis over voxels above half the peak fraction, ICV from summed fractions, no erosion. Same JSON keys, so the panel is unchanged. PVE CSF includes sulcal CSF (2.9 % vs 2.2 % ventricles-only on the default image).
+- One niimath failure mode to know: an air-mask failure (unreadable template, registration failure) exits `--qc` non-zero, so all QC fails. Too few air voxels is not a failure — niimath nulls `snrd_*`/`summary_bg_*` and the panel shows `—`. niimath also emits `cnr_noair` beside the air-aware `cnr` (panel shows `cnr`).
 
-**Feed it `nv.saveVolume(volumes[0])`, not the dropped file** — the one subtlety.
-NiiVue may reorient on load, and the module returns labels on whatever grid it
-was handed. Passing the bytes NiiVue is *displaying* is what keeps the T1 and the
-segmentation geometry-identical for `--qc`, which requires that. It is the same
-argument the old code made by building the label volume from `volumes[0].hdr`;
-`computeQc` serializes `volumes[0]` the same way.
+## CLI (`cli/qc.py`)
 
-**WebGPU preferred, WebGL2 fallback.** We pass no `backend`, so the package's
-default `auto` picks: WebGPU where it exists, WebGL2 where it does not — so this
-page needs no WebGPU (Linux browsers without it still segment). Its third,
-threaded-CPU backend is unreachable here (see the COOP/COEP limitation below).
-`?backend=webgl2` forces the fallback for testing; `result.backend` reports which
-ran, in the status bar and console.
+`python3 cli/qc.py --in T1.nii[.gz] --out qc.json [--model …] [--bids sidecar.json]` — Python 3.8+ standard library only, so CLI users need no Node (niimath's own install path is `pip`). The page's pipeline on the native `brainchop-<model>` (PVE: `brainchop-mindmap --pve`) and `niimath` executables, found on `PATH` or `$BROWSERQC_BIN`. No browser, no build, no image I/O (niimath reads the images). It adds `provenance.segmentation`, the template basename and `bids_meta` as the page does, and reads tissue labels from `src/models.json`. NIfTI input only (run dcm2niix yourself). The input is made absolute so a name starting with `-` cannot read as an option; a malformed `--bids` sidecar is a clean `error:` exit.
 
-**The wasm is staged, not committed.** The package loads its emscripten glue by a
-computed URL, and each glue file finds its own `.wasm` through its own
-`import.meta.url` — so a bundler can neither rewrite the import nor emit the
-assets, and the pair must stay adjacent and unhashed. `public/` preserves names
-in dev and build alike, so [`scripts/copy-brainchop.mjs`](scripts/copy-brainchop.mjs)
-copies the three segmentation models' WebGPU + WebGL2 pairs and `worker.js` from
-`node_modules` into `public/brainchop/<version>/` (gitignored) before every `dev`/`build`,
-and `main.ts` points `assetPath` there. Only those backend pairs — the mindgrab
-model and the CPU builds stay in `node_modules`. The version is in the path
-because these names never change while the page bundle is hashed, and Pages
-caches them for 10 minutes: right after the 0.1.20260923 deploy a browser ran the
-new page against its cached old `worker.js`, which refused `mindsnap`. The script wipes the
-directory first, so a file a version bump renames cannot linger and ship. Same
-class of problem as the niimath/dcm2niix `optimizeDeps.exclude` workaround.
-`@brainchop/mindgrab` itself is **exact-pinned** (no caret): the publisher puts
-the build date in the patch field, so `^` would make every future publish — ~1 MB
-of opaque wasm running with full page privileges — a silent `npm install` away.
-
-**Flow** (`runSegment(file)` in [src/main.ts](src/main.ts)): `nv.loadVolumes([file])`
-(display) → `nv.saveVolume(volumes[0])` → `segment(t1, {model:'16chan18cls', worker:true})` →
-`addVolume` → `setColormapLabel(idx, SEG_COLORMAP or MINDSNAP_COLORMAP)` (an rc.9 `ColorMap` literal:
-`A`+`I` alongside `R`/`G`/`B`; label 0 alpha 0) → QC. The overlay is native-grid labels (verified on the
-default 192×256×201 · 0.9 mm `t1_crop`, genuinely non-256³ so the back-projection
-does real work). The **Opacity** slider (`#ovlSlider`) drives the overlay's
-opacity via `nv.setVolume(segIndex, {opacity})`.
-
-**It no longer crops, and that changed the numbers.** The tfjs path ran with
-`enableCrop: true`, which brainchop's own parameter file annotates as *"WebGL2
-fallback only (texture limit); WebGPU runs the full volume."* — model16's
-receptive field is 255 on a 256³ volume, so cropping feeds the large-dilation
-layers mostly zero padding, and upstream states this model family cannot crop.
-The wasm module runs the full volume and refuses `--crop`. **The uncropped result
-is the authoritative one**; that is brainchop's own designation, not a
-preference. Characterized on the default subject (`cli/qc.mjs`, 58 shared numeric
-metrics):
-
-| metric group | Δ | why |
-| --- | --- | --- |
-| air/background (`summary_bg_*`, `fber`, `qi_1`, `efc_brain`, `wm2max`, `snrd_wm`) | **0.00 %** — bit-identical | depend only on the T1 + air mask, not the labels |
-| WM (`summary_wm_*`, `snr_wm`, `vol_wm_mm3`) | 0.2–1.7 % | large confident region, least boundary-sensitive |
-| GM | 1.8–6.3 % | more boundary |
-| CSF (ventricles only, ~18k voxels) | 3–16 % | smallest structure, most boundary-sensitive |
-| `summary_gm_k`, `summary_wm_k` | huge in % | excess kurtosis near zero (0.005 → 0.13); absolute change is 0.13/0.33 — do not read the percentage |
-
-Median |Δ| across all shared metrics is **1.6 %**. End-to-end run time went
-**27.6 s → 6.6 s** (headless Chrome, software WebGPU).
-
-**No data leaves the machine, audited.** The package's dist has no absolute URL, no `WebSocket`/`sendBeacon`, no `eval`; its only fetch is emscripten's same-origin load of its own adjacent `.wasm`, and it throws `unsupported-option` if `assetPath` resolves off-origin. Weights are compiled in — nothing remote. Re-check on any version bump.
-
-## QC (niimath `--qc`)
-
-After the overlay is displayed, [src/main.ts](src/main.ts) `computeQc` runs niimath's `--qc --air --json` (MRIQC-style anatomical IQMs: CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions and per-tissue volumes) on the **native** T1 + the **native-space** segmentation and fills the right-side [#qcPanel](index.html).
-
-- **Matching grids (requirement).** `--qc` demands the T1 and segmentation share a voxel grid. We serialize the T1 with `nv.saveVolume({volumeByIndex:0, filename:''})` (bytes, no download) so it comes from the **same** `volumes[0]` geometry the native segmentation was built from — they align by construction.
-- **Fixed tissue labels, per label set.** `--qc` classifies each voxel CSF/GM/WM from the label values we pass. [src/qc.ts](src/qc.ts) `TISSUE_LABELS` hard-codes two sets: the 18-class models (`16chan18cls`, `mindmap`) use CSF `[3,4,11,12]` (ventricles) and WM `[1,5]` (cerebral + cerebellar WM); `mindsnap`'s 104 Desikan-Killiany labels use CSF `87–93` (ventricles + CSF) and WM `85,86,95,96` plus the corpus callosum `99–103`, which the 18-class models count inside Cerebral-WM. Every other non-zero label — including the 68 `ctx-*` cortical labels — is GM. No runtime name parsing. On the default image the three models give GM 749/728/703, WM 493/495/494, CSF 26.3/27.0/26.4 cm³, so the 104-class grouping agrees with the 18-class one.
-- **WASM invocation (the gotcha).** `--qc` isn't a chain op (image→ops→image) — it takes its own argv and writes JSON. The wrapper's `run()` can't express that, so **`runNiimathRaw`** posts a raw job **straight to the niimath Web Worker** (via the wrapper's private `worker` field — see "niimath" below). The worker stages `blob` + `extraFiles` into MEMFS, runs `cmd` argv through `callMain`, and reads `outName` back as bytes. `runNiimathQc` fetches `avg152T1`, checks that a timed-out call has not reset the worker, then runs `--qc --air --json`. Safe against the wrapper's per-run `onmessage` swap because the single-flight queue serializes all niimath work.
-- **Report + Save.** niimath emits the MRIQC-style report: metrics flat at top level + `size_*`/`spacing_*` + `provenance`. BrowserQC appends optional `bids_meta` and `provenance.segmentation` (niimath names only itself), exposes the result at full precision as `window.browserqcMetrics` (the CLI's seam), and downloads it through **Save**. `bids_meta` comes from a dropped `.json` sidecar, bound to the *current* image (never a leftover — see `stagedSidecar`); dcm2niix-generated sidecars are **not** auto-paired yet (drop the `.json` yourself, or use `--bids`).
-- **Panel lifecycle.** Empty on load; cleared at the top of every `runSegment` (which also clears `window.browserqcMetrics`); populated when niimath's JSON parses. Hidden below 720 px (`#qcPanel` in [src/style.css](src/style.css)).
-
-CLI reference the WASM call mirrors: `niimath --qc <t1> --seg <seg> --csf 3,4,11,12 --wm 1,5 --air avg152T1.nii.gz --json qc.json` ([qc.c](../niimath/src/qc.c)).
-
-## niimath (the QC + air engine)
-
-niimath is the npm package **`@niivue/niimath` (1.4.20260909)** — `main.ts` imports `{ Niimath } from '@niivue/niimath'`. It now owns the full QC and air-metric calculation. Teardown uses the wrapper's public `dispose()`. But it exposes no accessor for its Web Worker, so the raw-post call reaches its **private `worker` field**, through the one `niimathWorker()` helper so a wrapper rename fails in a single place; `ensureNiimath()` asserts the handle is real after `init()` so a bump fails loudly instead of silently disabling QC. That field name + the worker message protocol (`{blob,extraFiles,cmd,outName}` → `blob`/`ready`/`error`) are load-bearing — re-verify on any bump.
-
-Like `@niivue/dcm2niix`, it's in `optimizeDeps.exclude` ([vite.config.ts](vite.config.ts)) because Vite's dev prebundler can't resolve its `new Worker(new URL('./worker.js', import.meta.url))` + WASM under `.vite/deps` — exclude keeps the worker a standalone module whose runtime URL resolves. (Production `vite build` uses Rollup and handles it either way.)
+**Parity** (`test/cli-parity.mjs`, all four models, default image; brainchop 0.1.20260925 Metal/CPU vs headless-Chrome SwiftShader WebGPU): segmentation Dice ≥ 0.9994 per tissue, PVE mean |Δfraction| ≤ 0.0003; CLI vs page median metric Δ < 0.01 %, worst 1.7 % (`summary_wm_k`, excess kurtosis near zero). niimath wasm vs native on identical inputs differs by ≤ 0.043 %, not zero: niimath is built `-ffast-math`, so native and wasm round differently (~1e-13 in tissue stats) and the air registration amplifies that (0.04 % of air voxels → `summary_bg_*`). The test's bar is 0.1 %.
 
 ## Deploy
 
+Served at [browserqc.org](https://browserqc.org) — a custom domain ([public/CNAME](public/CNAME)), so `base: '/'` in [vite.config.ts](vite.config.ts); still reference assets through `import.meta.env.BASE_URL`. The [workflow](.github/workflows/ghpages.yml) (Node 22) runs `npm ci`, `test:unit`, `build`, then JamesIves deploys `dist/` to `gh-pages`. Anything in `public/` is public: `t1_crop.json` is a **de-identified** fixture — keep it minimal.
 
-Served at [browserqc.org](https://browserqc.org) — a **custom domain** ([public/CNAME](public/CNAME)), so `base: '/'` in [vite.config.ts](vite.config.ts) (root, not a `/repo/` subpath). Still reference bundled assets through `import.meta.env.BASE_URL`, not absolute `/`. The [workflow](.github/workflows/ghpages.yml) (Node 22) runs `test:unit` before `build`, then JamesIves deploys `dist/` (which includes `public/CNAME`) to `gh-pages`. `@niivue/dcm2niix` + `@niivue/niimath` are in `optimizeDeps.exclude` because Vite's prebundler breaks their WASM workers; don't remove that. Anything shipped in `public/` is public: `t1_crop.json` is a **de-identified** fixture (scanner/site/patient identifiers stripped) — keep it minimal.
-
-## CLI (`cli/qc.mjs`)
-
-`node cli/qc.mjs --in T1.nii[.gz] --out results.json [--bids sidecar.json]` — headless QC, JSON out. Needs `npm run build` and Chrome.
-
-It **drives the real page in headless Chrome** rather than re-implementing the pipeline in Node, so results are the browser's by construction (verified: every metric bit-identical to an interactive load, and deterministic run-to-run). That is still forced, though the reason changed with the engine: segmentation needs a GPU backend — **WebGPU or WebGL2**, both browser-only APIs Node has no implementation of, so the module refuses in Node. Headless Chrome supplies WebGPU via SwiftShader. (The threaded-CPU backend is no escape hatch: Node has no `crossOriginIsolated`, so the package refuses it there too.)
-
-Two seams: the CLI intercepts the page's request for its bundled default image to inject the input (so the normal auto-run does the work, no CLI special-casing in the app), and `computeQc` publishes `window.browserqcMetrics` at full precision because the panel rounds to 3 s.f.
-
-## Air metrics
-
-niimath 1.4.20260909 owns the MRIQC-style ArtifactMask calculation through `--qc --air`. BrowserQC passes the bundled `avg152T1.nii.gz` template and consumes niimath's JSON report. The former TypeScript implementation and its optional air-mask overlay are deliberately gone, so there is one implementation of the metric.
-
-Two consequences, both accepted: niimath still emits `cnr_noair` beside the air-aware `cnr` (the panel shows `cnr` only), and an air-mask failure (template unreadable, registration failure) now exits `--qc` non-zero with no JSON, so **all** QC fails rather than just the air keys — the old TS pipeline degraded to `cnr_noair`. Too-few-air-voxels is not a failure: niimath nulls `snrd_*`/`summary_bg_*` and the panel renders `—`. One `WORKER_TIMEOUT_MS` (60 s) now bounds template fetch + RAS + registration + head mask + stats (previously two 60 s budgets); the work is ~2 s in WASM, so there is ample headroom.
+**No data leaves the machine, audited** for mindgrab: no absolute URL, no `WebSocket`/`sendBeacon`, no `eval`; its only fetches are its own same-origin glue + wasm. Re-check on any version bump.
 
 ## Deliberate decisions & known limitations
 
-- **Single-flight liveness (invariant — keep it).** One unsettled job freezes the whole `enqueue`/`pending` chain (spinner stuck until reload), so **every worker-backed step must be time-bounded**: brainchop + niimath (init+run) + dcm2niix (init+run) via `withTimeout`. (brainchop's old per-attempt inactivity watchdog went with the tfjs worker; the wasm module is a single awaited call, so plain `withTimeout` covers it.) A worker can spawn and then never post back (no message, no `onerror`) — bound any new one you add.
-- **Smoke is wiring-only.** Drives load → segmentation → overlay → `--qc` → panel to completion and fails on any `console.error`/page error, but does **not** assert segmentation or QC *values* (accuracy is brainchop's / niimath's to validate).
-- **Tissue-label grouping is a judgement call.** WM = cerebral + cerebellar white matter (`[1,5]`); brainstem/VentralDC/deep-GM fall into GM. Fine for a relative CJV/CNR/SNR estimator; widen `WM_LABELS`/`CSF_LABELS` in [src/qc.ts](src/qc.ts) if needed. `--qc --erode` defaults to 1 (not exposed in the UI).
-- **HMR dev-only limitation.** An already-running inference/conversion finishes after `cleanup()`; the execution-time + `runSegment`-entry `isCleanedUp` guards keep it from touching a destroyed NiiVue. Not worth cross-pipeline cancellation.
-- **CLI error gate.** `cli/qc.mjs` fails (exit 1, no output written) on any page/console error — the app is expected to run clean (the smoke gates on the same signal), so a page error means the result may be wrong.
-- **dcm2niix sidecars not auto-paired.** `runDcm2niix` drops generated `.json`. A user-dropped sidecar is retained only when conversion yields one series; multi-series selection omits `bids_meta` because one sidecar cannot be paired safely. The CLI accepts an explicit `--bids`. Per-series pairing is a deferred enhancement (untested against real DICOM).
-- **22 kB of dead worker JS ships (accepted).** Vite resolves the literal `new URL('./worker.js', import.meta.url)` in the `!assetPath` branch of mindgrab's `workerUrl()` and emits a chunk for it. We always pass `assetPath`, so the worker actually loaded is `public/brainchop/<version>/worker.js` and the chunk is unreachable. Size wart only; not worth patching the package.
-- **The CPU backend is deliberately not staged.** `backend:'auto'` falls through to CPU only on a cross-origin-isolated page (COOP/COEP), which GitHub Pages can't set — so the omitted `brainchop-16chan18cls.js/.wasm` can't 404 today. If COOP/COEP is ever added, stage that pair too.
-- **A GPU that suits neither backend shows a technical message.** `backend: 'auto'` demotes a `shader-f16`-less / too-small adapter to WebGL2 on its own, so only a machine where *both* fail throws; that surfaces the raw `BrainchopError` as `Failed: <code>` via the enqueue catch — graceful (no crash), but not friendly text. Mapping `BrainchopError.code` → friendly text is a deferred nicety.
+- **Smoke is wiring-only**: it asserts the runs complete clean, not segmentation/QC values — that is what `test:parity` and the packages' own suites cover.
+- **The CPU backend is unreachable**: `auto` falls through to it only on a cross-origin-isolated page (COOP/COEP), which GitHub Pages can't set.
+- **A GPU that suits neither backend** surfaces mindgrab's raw error as `Failed: …` — graceful, not friendly.
+- **Size wart**: every model's WebGPU, WebGL2 and CPU glue + wasm is emitted into `dist/` (Vite follows each literal `import()`); a browser downloads only the pair it runs.
+- **Stray images in a DICOM drop** (NiiVue's `volumeExtensions` include PNG/JPG/TIF) become extra picker tiles, as in brainchop-next; a lone image with no own sidecar takes the drop's first `.json`, even an unrelated one (e.g. `dataset_description.json`). Both accepted.
+- **60 s bound** on each worker step also caps mindgrab (its own default is 120 s): a 24-channel model on WebGL2 or a weak GPU could time out — cleanly, with `Failed: …`.
+- **`test:dicom` never runs in CI** (the reproin sample is not in the repo); it prints `skipped` without it.
+
+## Status and next steps (2026-09-26)
+
+Refactor onto stock packages done (app code 1069 → ~490 lines), audited (security/bugs + simplification; fixes applied), all gates green locally. **Blocker to deploy:** `package.json` needs `@niivue/niimath` **1.4.20260926** (adds `qc()` and `--pve`; niimath branch `qc-pve`), which is not yet on npm — `package-lock.json` still pins 1.4.20260924, so `npm ci` fails until it is published and `npm install` refreshes the lock. Local development used `npm install --no-save <packed tarball>`. CLI users also need niimath ≥ v1.0.20260926 (PyPI) and brainchop ≥ 0.1.20260925 (`--pve`).

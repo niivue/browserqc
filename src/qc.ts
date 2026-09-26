@@ -1,28 +1,21 @@
 /**
  * MRIQC-style quality-control metrics for the segmentation result.
  *
- * niimath's `--qc` reads the input T1 + a matching integer segmentation and emits
- * a JSON report of anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV
- * fractions, per-tissue volume/intensity summaries, background statistics). It classifies every voxel as CSF / GM /
- * WM: we pass the CSF and WM label values, and every other non-zero label is GM.
+ * niimath's `--qc` reads the input T1 + a matching segmentation and emits a JSON
+ * report of anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions,
+ * per-tissue volume/intensity summaries, background statistics).
  *
- * The label→tissue mapping is FIXED per label set — each model always emits the
- * same labels, so we hard-code the grouping rather than parse names at runtime.
- * The two 18-class models (16chan18cls, mindmap) share one set:
- *   CSF = ventricles          → 3 Lateral, 4 Inferior-Lateral, 11 3rd, 12 4th
- *   WM  = white matter        → 1 Cerebral-WM, 5 Cerebellum-WM
- * mindsnap's 104 Desikan-Killiany labels (src/mindsnap-colormap.json):
- *   CSF = 87-92 ventricles + 93 CSF
- *   WM  = 85/86 cerebral WM, 95/96 cerebellar WM, 99-103 corpus callosum (the
- *         18-class models count the callosum inside Cerebral-WM)
- * GM = everything else non-zero: the 68 ctx-* cortical labels, deep-GM nuclei,
- * cerebellar cortex, brainstem.
+ * Tissue grouping lives in models.json, shared with the CLI: each label model's CSF
+ * and WM label values (every other non-zero label is GM), hard-coded because a model's
+ * labels never change. mindsnap counts the corpus callosum as WM, as the 18-class
+ * models do inside Cerebral-WM. A `pve` model names the mindmap model whose GM/WM/CSF
+ * fractions niimath weights per voxel (`--pve`), as MRIQC does.
  */
 
-export const TISSUE_LABELS = {
-  18: { csf: [3, 4, 11, 12], wm: [1, 5] },
-  104: { csf: [87, 88, 89, 90, 91, 92, 93], wm: [85, 86, 95, 96, 99, 100, 101, 102, 103] },
-}
+import models from './models.json' with { type: 'json' }
+
+export type Model = keyof typeof models
+export const MODELS: Record<Model, { label: string; csf?: number[]; wm?: number[]; pve?: string }> = models
 
 /** Column-keyed numeric values in niimath's `--qc` JSON report. */
 export type QcMetrics = Record<string, number>

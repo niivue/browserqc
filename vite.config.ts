@@ -8,23 +8,16 @@ export default defineConfig({
     open: '/index.html',
     port: 8091,
   },
+  // mindgrab's worker uses top-level await, which the default iife format cannot hold.
   worker: {
     format: 'es',
   },
   build: {
     target: 'esnext',
   },
-  // Vite's dev dep-prebundler (esbuild) trips on the `new Worker(new URL(...))`
-  // WASM worker in these packages — it can't resolve the worker module under
-  // .vite/deps. Exclude them so the worker stays a standalone module whose runtime
-  // URL resolves. (Production `vite build` uses Rollup and handles it either way;
-  // this is dev-mode only.)
-  //
-  // @brainchop/mindgrab for a different reason: the prebundle cache is keyed on
-  // the lockfile, and a stale copy (still offering only its first two models)
-  // outlived a package upgrade and refused 'mindmap'/'mindsnap' in dev only.
-  // Its dist is already plain ESM, so serving it unbundled costs nothing.
+  // Vite's dev prebundler (esbuild) moves these into .vite/deps, where their
+  // `new Worker(new URL(...))` workers and wasm no longer resolve. Rollup (build) is fine.
   optimizeDeps: {
-    exclude: ['@niivue/dcm2niix', '@niivue/niimath', '@brainchop/mindgrab'],
+    exclude: ['@niivue/dcm2niix', '@niivue/nv-ext-dcm2niix', '@niivue/niimath', '@brainchop/mindgrab'],
   },
 })

@@ -2,10 +2,6 @@
 node_modules/
 dist/
 
-# Staged from node_modules by scripts/copy-brainchop.mjs on every dev/build run:
-# build output, versioned by the @brainchop/mindgrab dependency, not source.
-public/brainchop/
-
 # npm is the single package authority — no bun lockfile
 bun.lock
 
@@ -17,6 +13,7 @@ test/*.png
 
 # transient audit review docs (audit_temp.md / audit_response.md) — not committed
 audit_*.md
+plan_*.md
 
 # local QC scratch data (subject scans / reference MRIQC reports) — never commit
 qc/
