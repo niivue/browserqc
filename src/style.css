@@ -19,7 +19,6 @@ body {
 body {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
   font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -259,10 +258,6 @@ footer {
   background: var(--bg);
 }
 
-div.footer {
-  width: 100%;
-}
-
 table.footer {
   width: 100%;
   table-layout: fixed;
@@ -283,10 +278,6 @@ table.footer th {
   vertical-align: middle;
 }
 
-table.footer th:nth-child(2) {
-  text-align: center;
-}
-
 table.footer th:last-child {
   text-align: right;
 }
@@ -300,7 +291,7 @@ table.footer th:last-child {
   border-top-color: #fff;
   animation: spin 1s linear infinite;
   vertical-align: middle;
-  /* Always occupy its box; spin() only toggles visibility, so showing/hiding the
+  /* Always occupy its box; setBusy() only toggles visibility, so showing/hiding the
      spinner causes no reflow and the status bar never flickers. */
   visibility: hidden;
 }
@@ -316,7 +307,6 @@ table.footer th:last-child {
   }
 }
 
-.hidden,
 [hidden] {
   display: none !important;
 }
@@ -337,9 +327,6 @@ dialog::backdrop {
 
 dialog p {
   margin: 0.5rem 0;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
 }
 
 dialog h3 {
@@ -353,4 +340,23 @@ dialog a {
 dialog button {
   margin-top: 0.8rem;
   margin-right: 0.5rem;
+}
+
+#seriesList {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+#seriesList .series-opt {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
+
+#seriesList .series-opt:focus {
+  outline: 2px solid #9ab0ff;
 }

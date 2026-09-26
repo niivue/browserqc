@@ -29,44 +29,51 @@
           <option value="16chan18cls" selected>fast 16chan18cls</option>
           <option value="mindmap">mindmap 24chan18cls</option>
           <option value="mindsnap">mindsnap 24chan104cls</option>
+          <option value="mindmap-pve">mindmap 24chan18cls PVE</option>
         </select>
+      </div>
+      <div class="qc-opacity" hidden>
+        <label for="seriesPick">Series</label>
+        <select id="seriesPick"></select>
       </div>
       <div class="qc-opacity">
         <label for="ovlSlider">Opacity</label>
         <input type="range" min="0" max="255" value="128" id="ovlSlider" aria-label="Segmentation overlay opacity" />
       </div>
-      <div id="qcBody">
-        <p class="qc-empty">No QC values yet — metrics appear automatically once an image loads.</p>
-      </div>
+      <div id="qcBody"></div>
     </aside>
   </div>
 
   <footer>
-    <div class="footer">
-      <table class="footer">
-        <tr>
-          <th id="location">Drag &amp; drop a NIfTI image or a folder of DICOM files</th>
-          <th>
-            <div id="loadingCircle" class="loading-circle"></div>
-            <label id="statusMsg" class="hidden"></label>
-          </th>
-        </tr>
-      </table>
-    </div>
+    <table class="footer">
+      <tr>
+        <th id="location">Drag &amp; drop a NIfTI image or DICOM files or folders</th>
+        <th>
+          <div id="loadingCircle" class="loading-circle"></div>
+          <label id="statusMsg" hidden></label>
+        </th>
+      </tr>
+    </table>
   </footer>
 
-  <select id="dicomPick" class="hidden" aria-label="Pick a converted NIfTI series"></select>
+  <dialog id="seriesDialog">
+    <form method="dialog">
+      <h3>Choose a series</h3>
+      <div id="seriesList"></div>
+    </form>
+  </dialog>
 
   <dialog id="aboutDialog">
     <form method="dialog">
       <h3><a href="https://github.com/niivue/browserqc" target="_blank" rel="noopener">BrowserQC</a></h3>
       <p>Automated MRI quality control, <strong>entirely in your browser</strong> — no upload, no server.
-        Drag in a NIfTI image (or a folder of DICOM files) and it runs automatically.</p>
+        Drag in a NIfTI image (or DICOM files or folders; with several series you pick one) and it runs automatically.</p>
       <ul>
         <li><strong>Segmentation</strong> — a
           <a href="https://github.com/neuroneural/brainchop" target="_blank" rel="noopener">brainchop</a>
           deep-learning model parcellates the brain into 17 gray/white-matter and
-          subcortical regions (or 103 Desikan-Killiany regions with mindsnap), shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
+          subcortical regions (103 Desikan-Killiany regions with mindsnap, or GM/WM/CSF partial-volume
+          fractions with PVE), shown as a colour overlay on your scan (adjust with the <strong>Opacity</strong>
           slider)</li>
         <li><strong>Quality metrics</strong> — <a href="https://github.com/rordenlab/niimath" target="_blank"
             rel="noopener">niimath</a> computes MRIQC-style image-quality metrics (CJV, CNR, SNR, WM2MAX, EFC,
@@ -81,7 +88,7 @@
         <em>MRIQC: Advancing the automatic prediction of image quality in MRI from unseen sites.</em>
         PLoS One 12(9):e0184661.
         <a href="https://pubmed.ncbi.nlm.nih.gov/28945803/" target="_blank" rel="noopener">PMID: 28945803</a>.
-        CNR includes an air-noise term; hard segmentation and no bias correction still make
+        CNR includes an air-noise term; deep-learning segmentation and no bias correction still make
         values approximate rather than comparable to MRIQC normative data.</small></p>
       <p><small>Licensed <strong>BSD-2-Clause</strong>. Runs on WebGPU where available, WebGL2 otherwise.</small></p>
       <button autofocus id="closeAboutBtn" value="default">Close</button>
