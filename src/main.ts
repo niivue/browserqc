@@ -12,6 +12,7 @@ import { runDcm2niix, traverseDataTransferItems } from '@niivue/nv-ext-dcm2niix'
 import { Niimath, type QcTissues } from '@niivue/niimath'
 import { MODELS as BRAINCHOP, type ModelName, segment, segmentTissues } from '@brainchop/mindgrab'
 import { MODELS, type Model, type QcMetrics, type QcReport, bindSidecar, renderQc } from './qc'
+import { readRating, resetRating } from './rate'
 
 declare global {
   interface Window {
@@ -35,6 +36,8 @@ const seriesPick = $<HTMLSelectElement>('seriesPick')
 const seriesDialog = $<HTMLDialogElement>('seriesDialog')
 const ovlSlider = $<HTMLInputElement>('ovlSlider')
 const saveBtn = $<HTMLButtonElement>('saveBtn')
+const rateBtn = $<HTMLButtonElement>('rateBtn')
+const rateDialog = $<HTMLDialogElement>('rateDialog')
 const qcBody = $('qcBody')
 const params = new URLSearchParams(location.search)
 
@@ -44,6 +47,7 @@ let current: Series | null = null
 let stagedSidecar: unknown = null // a .json dropped alone, bound to the next image only
 let busy = false
 let dropped = false // a drop was accepted: the default image must not run over it
+let rated: Series | null = null // the image the Rate form belongs to
 let tissueColormaps: Record<string, string> = {}
 
 const nv = new NiiVue({ isDragDropEnabled: false, backgroundColor: [0, 0, 0, 1] })
@@ -95,6 +99,12 @@ async function run(): Promise<void> {
   try {
     setStatus(`Loading ${current.label}…`)
     await nv.loadVolumes([{ url: current.file, name: current.file.name }])
+    // Rate only what is on screen; a model change keeps the rating in progress.
+    if (rated !== current) {
+      rated = current
+      resetRating()
+    }
+    rateBtn.disabled = false // pick() disabled it, even if this image was re-picked after a failed load
     // Segment the bytes NiiVue DISPLAYS, not the dropped file: NiiVue may reorient on
     // load and the module answers on the grid it is given, so this keeps the T1 and
     // the segmentation on one grid, which --qc requires.
@@ -201,6 +211,8 @@ async function describeSeries(images: File[], sidecars: File[], fallback: unknow
 function pick(index: number): void {
   seriesPick.value = String(index)
   current = series[index]
+  rateBtn.disabled = true // until the new image is displayed
+  rateDialog.close()
   void run()
 }
 
@@ -278,11 +290,14 @@ ovlSlider.oninput = () => {
   nv.updateGLVolume()
 }
 $('aboutBtn').onclick = () => $<HTMLDialogElement>('aboutDialog').showModal()
-saveBtn.onclick = () => {
-  const url = URL.createObjectURL(new Blob([`${JSON.stringify(window.browserqcMetrics, null, 2)}\n`], { type: 'application/json' }))
-  Object.assign(document.createElement('a'), { href: url, download: `${current!.file.name.replace(/\.(nii|nii\.gz|mgz|mgh)$/i, '')}_qc.json` }).click()
+function download(data: unknown, suffix: string): void {
+  const url = URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: 'application/json' }))
+  Object.assign(document.createElement('a'), { href: url, download: `${current!.file.name.replace(/\.(nii|nii\.gz|mgz|mgh)$/i, '')}_${suffix}.json` }).click()
   setTimeout(() => URL.revokeObjectURL(url))
 }
+saveBtn.onclick = () => download(window.browserqcMetrics, 'qc')
+rateBtn.onclick = () => (rateDialog.open ? rateDialog.close() : rateDialog.show())
+$('rateSave').onclick = () => download(readRating(current!.file.name), 'rating')
 
 // --- init: NiiVue falls back to WebGL2 and mindgrab does too, so no navigator.gpu guard ---
 async function init(): Promise<void> {

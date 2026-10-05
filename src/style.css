@@ -115,14 +115,6 @@ main {
   accent-color: var(--accent);
 }
 
-.qc-titlesub {
-  font-size: 0.68rem;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #8a90a0;
-}
-
 .qc-empty {
   margin: 0.5rem 0;
   color: #9098a8;
@@ -341,6 +333,62 @@ dialog button {
   margin-top: 0.8rem;
   margin-right: 0.5rem;
 }
+
+#rateDialog {
+  position: fixed;
+  inset: 1rem auto auto 1rem;
+  margin: 0;
+  width: 22rem;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+#rateDialog summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin: 0.6rem 0 0.4rem;
+}
+
+#rateDialog input[type="range"],
+#rateDialog textarea {
+  width: 100%;
+}
+
+#rateDialog textarea {
+  user-select: text;
+}
+
+#rateArtifacts {
+  display: grid;
+  gap: 0.25rem;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.rate-bar {
+  display: flex;
+  list-style: none;
+  padding: 0;
+  margin: 0.2rem 0 0;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.rate-bar li {
+  flex: 1;
+  padding: 0.2rem 0;
+  border: 1px solid var(--border);
+}
+
+/* MRIQC's colours: red, amber, blue, green */
+#ratingBar li.on:nth-child(1) { background: #dc3545; }
+#ratingBar li.on:nth-child(2) { background: #ffc107; color: #222; }
+#ratingBar li.on:nth-child(3) { background: #0d6efd; }
+#ratingBar li.on:nth-child(4) { background: #198754; }
+#confidenceBar li.on:nth-child(1) { background: #ffc107; color: #222; }
+#confidenceBar li.on:nth-child(2) { background: #198754; }
 
 #seriesList {
   display: grid;
