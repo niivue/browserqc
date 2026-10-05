@@ -7,7 +7,7 @@
  * then compute niimath MRIQC-style quality metrics into the side panel.
  */
 
-import NiiVue, { type ColorMap, MULTIPLANAR_TYPE, SHOW_RENDER, SLICE_TYPE } from '@niivue/niivue'
+import NiiVue, { type ColorMap, DRAG_MODE, MULTIPLANAR_TYPE, type NVImage, SHOW_RENDER, SLICE_TYPE } from '@niivue/niivue'
 import { runDcm2niix, traverseDataTransferItems } from '@niivue/nv-ext-dcm2niix'
 import { Niimath, type QcTissues } from '@niivue/niimath'
 import { MODELS as BRAINCHOP, type ModelName, segment, segmentTissues } from '@brainchop/mindgrab'
@@ -35,6 +35,8 @@ const modelPick = $<HTMLSelectElement>('modelPick')
 const seriesPick = $<HTMLSelectElement>('seriesPick')
 const seriesDialog = $<HTMLDialogElement>('seriesDialog')
 const ovlSlider = $<HTMLInputElement>('ovlSlider')
+const viewPick = $<HTMLSelectElement>('viewPick')
+const dragPick = $<HTMLSelectElement>('dragPick')
 const saveBtn = $<HTMLButtonElement>('saveBtn')
 const rateBtn = $<HTMLButtonElement>('rateBtn')
 const rateDialog = $<HTMLDialogElement>('rateDialog')
@@ -49,8 +51,11 @@ let busy = false
 let dropped = false // a drop was accepted: the default image must not run over it
 let rated: Series | null = null // the image the Rate form belongs to
 let tissueColormaps: Record<string, string> = {}
+let grayWindow = [0, 0] // the T1's gray window (load-time or dragged), restored when leaving the background view
+let noise: number[] | null = null // the T1's background window, computed on first use
 
-const nv = new NiiVue({ isDragDropEnabled: false, backgroundColor: [0, 0, 0, 1] })
+// Nearest on 2D slices: QC wants raw voxels, not smoothed ones (NiiVue's 3D render is always linear).
+const nv = new NiiVue({ isDragDropEnabled: false, backgroundColor: [0, 0, 0, 1], volumeIsNearestInterpolation: true })
 
 function setStatus(msg: string): void {
   const el = $('statusMsg')
@@ -58,9 +63,9 @@ function setStatus(msg: string): void {
   el.hidden = !msg
 }
 
-// Disables everything that starts a run, so a run needs no stale-image checks.
+// Disables everything that starts a run (and View, whose setVolume would race the run's), so a run needs no stale-image checks.
 function setBusy(on: boolean): void {
-  busy = modelPick.disabled = seriesPick.disabled = on
+  busy = modelPick.disabled = seriesPick.disabled = viewPick.disabled = on
   $('loadingCircle').style.visibility = on ? 'visible' : 'hidden'
 }
 
@@ -86,6 +91,35 @@ async function computeQc(t1: Uint8Array<ArrayBuffer>, tissues: QcTissues): Promi
   }
 }
 
+// MRIQC's background mosaic window (nireports _get_limits, only_plot_noise): nonzero voxels,
+// min to 61st percentile, so the air fills the colormap and the head saturates.
+function noiseWindow(v: NVImage): number[] {
+  const img = v.img!
+  const stride = Math.ceil(v.nVox3D / 1e6) // ponytail: ≤ 1M samples of the first volume, plenty for a display window
+  const vals = Float64Array.from({ length: Math.ceil(v.nVox3D / stride) }, (_, i) => img[i * stride])
+    .filter((x) => x !== 0 && Number.isFinite(x)).sort()
+  if (!vals.length) return grayWindow // an empty image has no background to show
+  const slope = v.hdr.scl_slope || 1
+  return [vals[0], vals[Math.floor(0.61 * (vals.length - 1))]].map((x) => x * slope + v.hdr.scl_inter)
+}
+
+function setOpacity(): void {
+  for (const v of nv.volumes.slice(1)) v.opacity = ovlSlider.disabled ? 0 : Number(ovlSlider.value) / 255
+  nv.updateGLVolume()
+}
+
+// Tissues: gray T1 under the segmentation. Background: MRIQC's inverted-viridis noise view, overlays hidden.
+async function showView(): Promise<void> {
+  const t1 = nv.volumes[0]
+  if (!t1) return
+  const background = viewPick.value === 'background'
+  ovlSlider.disabled = background
+  setOpacity()
+  if (t1.colormap === 'gray') grayWindow = [t1.calMin, t1.calMax] // fresh load, or a contrast drag to keep
+  const [calMin, calMax] = background ? (noise ??= noiseWindow(t1)) : grayWindow
+  await nv.setVolume(0, { colormap: background ? 'viridis' : 'gray', isColormapInverted: background, calMin, calMax })
+}
+
 // Display `current`, segment it with the picked model, overlay the result, then QC it.
 async function run(): Promise<void> {
   if (!current) return
@@ -104,6 +138,8 @@ async function run(): Promise<void> {
       rated = current
       resetRating()
     }
+    noise = null
+    await showView() // before segmenting: a failed run must not leave the picker and the display disagreeing
     rateBtn.disabled = false // pick() disabled it, even if this image was re-picked after a failed load
     // Segment the bytes NiiVue DISPLAYS, not the dropped file: NiiVue may reorient on
     // load and the module answers on the grid it is given, so this keeps the T1 and
@@ -117,7 +153,7 @@ async function run(): Promise<void> {
       timeoutMs: WORKER_TIMEOUT_MS,
       onLog: (line: string) => console.debug('brainchop:', line),
     } as const
-    const opacity = Number(ovlSlider.value) / 255
+    const opacity = ovlSlider.disabled ? 0 : Number(ovlSlider.value) / 255
     // MRIQC segments inside SynthStrip's brain mask; mindgrab's matches it (see cli/qc.py).
     setStatus('Brain mask (mindgrab)…')
     const { mask } = await segment(t1, { model: 'mindgrab', mask: true, ...options })
@@ -285,10 +321,12 @@ document.addEventListener('drop', (e) => {
 })
 seriesPick.onchange = () => pick(Number(seriesPick.value))
 modelPick.onchange = () => void run()
-ovlSlider.oninput = () => {
-  for (const v of nv.volumes.slice(1)) v.opacity = Number(ovlSlider.value) / 255
-  nv.updateGLVolume()
-}
+ovlSlider.oninput = setOpacity
+viewPick.onchange = () => showView().catch((err) => {
+  console.error('view failed', err)
+  setStatus(`View failed: ${err instanceof Error ? err.message : String(err)}`)
+})
+dragPick.onchange = () => { nv.secondaryDragMode = DRAG_MODE[dragPick.value as 'contrast' | 'pan'] }
 $('aboutBtn').onclick = () => $<HTMLDialogElement>('aboutDialog').showModal()
 function download(data: unknown, suffix: string): void {
   const url = URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: 'application/json' }))

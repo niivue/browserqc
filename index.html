@@ -36,6 +36,20 @@
         <select id="seriesPick"></select>
       </div>
       <div class="qc-opacity">
+        <label for="viewPick">View</label>
+        <select id="viewPick">
+          <option value="tissues" selected>Gray/White/CSF</option>
+          <option value="background" title="MRIQC's background view: artifacts show in the air around the head">Background</option>
+        </select>
+      </div>
+      <div class="qc-opacity">
+        <label for="dragPick">Right drag</label>
+        <select id="dragPick" aria-label="Right-button drag">
+          <option value="contrast" selected>Contrast</option>
+          <option value="pan">Pan/zoom</option>
+        </select>
+      </div>
+      <div class="qc-opacity">
         <label for="ovlSlider">Opacity</label>
         <input type="range" min="0" max="255" value="128" id="ovlSlider" aria-label="Segmentation overlay opacity" />
       </div>
