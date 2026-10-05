@@ -1,7 +1,9 @@
 // Headless-WebGPU smoke for BrowserQC (npm run test:e2e builds first). Drives the
 // production build: NiiVue attach, Vite worker URLs, the default image's auto run
-// (segmentation → overlay → niimath --qc → panel), a hard-label model, the Opacity slider and
-// About. Wiring only: it asserts the runs complete clean, not segmentation/QC values.
+// (segmentation → overlay → niimath --qc → panel), a hard-label model, the Opacity slider,
+// About and the Rate widget. Wiring only: it asserts the runs complete clean, not
+// segmentation/QC values.
+import { readFileSync } from 'node:fs'
 import { finish, startPreview } from './preview.mjs'
 
 const preview = await startPreview(4173)
@@ -35,6 +37,23 @@ try {
   check(await page.isVisible('#aboutDialog'), 'About dialog did not open')
   await page.click('#closeAboutBtn')
   console.log('✓ Opacity slider driven, About dialog opens')
+
+  await page.click('#rateBtn')
+  check(await page.isVisible('#rateDialog'), 'Rate dialog did not open')
+  // Save unlocks on a slider move ≥ 10 s after the image loaded (MRIQC's minimum rating time).
+  await page.waitForFunction(() => {
+    const el = document.getElementById('rating')
+    el.value = '1.2'
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    return !document.getElementById('rateSave').disabled
+  }, undefined, { polling: 500, timeout: 15000 })
+  check(await page.textContent('#ratingBar li.on') === 'Exclude', 'rating 1.2 is not Exclude')
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#rateSave')])
+  const rating = JSON.parse(readFileSync(await download.path(), 'utf8'))
+  check(download.suggestedFilename() === 't1_crop_rating.json', `rating saved as ${download.suggestedFilename()}`)
+  check(rating.rating === '1.2' && rating.subject === 't1_crop.nii.gz' && Array.isArray(rating.artifacts),
+    `rating JSON ${JSON.stringify(rating)}`)
+  console.log('✓ Rate: slider band, Save writes MRIQC rating JSON')
 } catch (err) {
   failures.push(err.stack ?? String(err))
 }
