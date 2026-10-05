@@ -43,6 +43,7 @@ let series: Series[] = []
 let current: Series | null = null
 let stagedSidecar: unknown = null // a .json dropped alone, bound to the next image only
 let busy = false
+let dropped = false // a drop was accepted: the default image must not run over it
 let tissueColormaps: Record<string, string> = {}
 
 const nv = new NiiVue({ isDragDropEnabled: false, backgroundColor: [0, 0, 0, 1] })
@@ -85,7 +86,7 @@ async function computeQc(t1: Uint8Array<ArrayBuffer>, tissues: QcTissues): Promi
 async function run(): Promise<void> {
   if (!current) return
   const model = modelPick.value as Model
-  const { label, pve } = MODELS[model]
+  const { label, pve, csf, wm } = MODELS[model]
   setBusy(true)
   window.browserqcMetrics = undefined
   saveBtn.disabled = true
@@ -94,7 +95,6 @@ async function run(): Promise<void> {
   try {
     setStatus(`Loading ${current.label}…`)
     await nv.loadVolumes([{ url: current.file, name: current.file.name }])
-    setStatus(`Segmenting (${label})…`)
     // Segment the bytes NiiVue DISPLAYS, not the dropped file: NiiVue may reorient on
     // load and the module answers on the grid it is given, so this keeps the T1 and
     // the segmentation on one grid, which --qc requires.
@@ -108,6 +108,10 @@ async function run(): Promise<void> {
       onLog: (line: string) => console.debug('brainchop:', line),
     } as const
     const opacity = Number(ovlSlider.value) / 255
+    // MRIQC segments inside SynthStrip's brain mask; mindgrab's matches it (see cli/qc.py).
+    setStatus('Brain mask (mindgrab)…')
+    const { mask } = await segment(t1, { model: 'mindgrab', mask: true, ...options })
+    setStatus(`Segmenting (${label})…`)
     let tissues: QcTissues
     let backend: string
     if (pve) {
@@ -117,14 +121,14 @@ async function run(): Promise<void> {
         await nv.addVolume({ url: new File([result.tissues[name]], `${name}.nii`), colormap: tissueColormaps[name],
           colormapType: 1, calMin: 0.03, calMax: 1, opacity })
       }
-      tissues = { pve: [result.tissues.csf, result.tissues.gm, result.tissues.wm] }
+      tissues = { pve: [result.tissues.csf, result.tissues.gm, result.tissues.wm], mask }
       backend = result.backend
     } else {
       const result = await segment(t1, { model: model as ModelName, ...options })
       await nv.addVolume({ url: new File([result.image], 'segmentation.nii'), opacity })
       // NiiVue fills in label values (I) and alpha (A, label 0 transparent) itself.
       await nv.setColormapLabel(1, BRAINCHOP[model as ModelName].colormap as ColorMap)
-      tissues = { seg: result.image, csf: MODELS[model].csf!, wm: MODELS[model].wm! }
+      tissues = { seg: result.image, csf: csf!, wm: wm!, mask }
       backend = result.backend
     }
     window.browserqcInputs = { t1, ...tissues }
@@ -152,15 +156,22 @@ async function run(): Promise<void> {
 
 // --- drops: NIfTI directly, everything else through dcm2niix ---
 
-// Dimensions and voxel size from a little-endian NIfTI-1 header, which the first stream
-// chunk holds; anything else (NIfTI-2, big-endian) has no shape to show.
+// Dimensions and voxel size from a little-endian NIfTI-1 header; anything else (NIfTI-2,
+// big-endian) has no shape to show.
 async function niftiShape(file: File): Promise<{ dims: number[]; mm: number }> {
   let stream = file.stream()
   if (/\.gz$/i.test(file.name)) stream = stream.pipeThrough(new DecompressionStream('gzip'))
   const reader = stream.getReader()
-  const { value } = await reader.read()
+  const chunks: Uint8Array[] = []
+  for (let n = 0; n < 348;) { // streams promise no chunk size
+    const { value, done } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    n += value.byteLength
+  }
   void reader.cancel()
-  const header = value && value.byteLength >= 348 ? new DataView(value.buffer, value.byteOffset) : null
+  const bytes = await new Blob(chunks).arrayBuffer()
+  const header = bytes.byteLength >= 348 ? new DataView(bytes) : null
   if (header?.getInt32(0, true) !== 348) return { dims: [], mm: 0 }
   return { dims: Array.from({ length: Math.min(header.getInt16(40, true), 7) }, (_, i) => header.getInt16(42 + 2 * i, true)),
     mm: header.getFloat32(80, true) }
@@ -256,6 +267,7 @@ document.addEventListener('dragover', (e) => e.preventDefault())
 document.addEventListener('drop', (e) => {
   e.preventDefault()
   if (busy || !e.dataTransfer) return
+  dropped = true
   // Called synchronously: the item list is emptied once the event returns.
   traverseDataTransferItems(e.dataTransfer.items).then(openFiles, (err) => setStatus(`Could not read the drop: ${err}`))
 })
@@ -298,7 +310,7 @@ async function init(): Promise<void> {
     fetch(`${BASE}t1_crop.nii.gz`).then((r) => r.blob()),
     fetch(`${BASE}t1_crop.json`).then((r) => r.json()),
   ])
-  if (busy || series.length) return // a drop arrived while the default image downloaded
+  if (dropped) return // a drop arrived while the default image downloaded
   series = [{ file: new File([t1], 't1_crop.nii.gz'), label: 't1_crop', detail: '', voxels: 0, meta }]
   pick(0)
 }

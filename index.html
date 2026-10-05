@@ -26,10 +26,10 @@
       <div class="qc-opacity">
         <label for="modelPick">Model</label>
         <select id="modelPick" aria-label="Segmentation model">
-          <option value="16chan18cls" selected>fast 16chan18cls</option>
+          <option value="16chan18cls">fast 16chan18cls</option>
           <option value="mindmap">mindmap 24chan18cls</option>
           <option value="mindsnap">mindsnap 24chan104cls</option>
-          <option value="mindmap-pve">mindmap 24chan18cls PVE</option>
+          <option value="mindmap-pve" selected>mindmap 24chan18cls PVE</option>
         </select>
       </div>
       <div class="qc-opacity" hidden>
@@ -88,8 +88,8 @@
         <em>MRIQC: Advancing the automatic prediction of image quality in MRI from unseen sites.</em>
         PLoS One 12(9):e0184661.
         <a href="https://pubmed.ncbi.nlm.nih.gov/28945803/" target="_blank" rel="noopener">PMID: 28945803</a>.
-        CNR includes an air-noise term; deep-learning segmentation and no bias correction still make
-        values approximate rather than comparable to MRIQC normative data.</small></p>
+        CNR includes an air-noise term and intensities are N4-corrected as in MRIQC; deep-learning
+        segmentation still makes values approximate rather than comparable to MRIQC normative data.</small></p>
       <p><small>Licensed <strong>BSD-2-Clause</strong>. Runs on WebGPU where available, WebGL2 otherwise.</small></p>
       <button autofocus id="closeAboutBtn" value="default">Close</button>
     </form>

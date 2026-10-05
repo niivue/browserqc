@@ -1,6 +1,6 @@
 // Headless-WebGPU smoke for BrowserQC (npm run test:e2e builds first). Drives the
 // production build: NiiVue attach, Vite worker URLs, the default image's auto run
-// (segmentation → overlay → niimath --qc → panel), the PVE model, the Opacity slider and
+// (segmentation → overlay → niimath --qc → panel), a hard-label model, the Opacity slider and
 // About. Wiring only: it asserts the runs complete clean, not segmentation/QC values.
 import { finish, startPreview } from './preview.mjs'
 
@@ -19,10 +19,11 @@ try {
   check(Number.isFinite(await page.evaluate(() => window.browserqcMetrics.snrd_total)), 'snrd_total missing')
   console.log('✓ auto segmentation + niimath QC ran, panel populated')
 
-  await page.selectOption('#modelPick', 'mindmap-pve')
-  await page.waitForFunction(() => window.browserqcMetrics?.provenance?.pve === true, undefined, { timeout: 240000 })
-  check(/CJV/.test(await qcText()), 'QC panel did not populate after PVE')
-  console.log('✓ PVE fractions + niimath --qc --pve ran')
+  check(await page.evaluate(() => window.browserqcMetrics.provenance?.pve === true), 'default model is not PVE')
+  await page.selectOption('#modelPick', '16chan18cls')
+  await page.waitForFunction(() => window.browserqcMetrics?.provenance?.csf_labels, undefined, { timeout: 240000 })
+  check(/CJV/.test(await qcText()), 'QC panel did not populate after the label model')
+  console.log('✓ default PVE, then labels + niimath --qc --seg ran')
 
   await page.$eval('#ovlSlider', (el) => {
     for (const value of ['255', '64']) {

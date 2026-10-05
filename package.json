@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@brainchop/mindgrab": "0.1.20260925",
-    "@niivue/niimath": "1.4.20260926",
+    "@niivue/niimath": "1.4.20260928",
     "@niivue/niivue": "1.0.0-rc.16",
     "@niivue/nv-ext-dcm2niix": "1.0.0-rc.14"
   },

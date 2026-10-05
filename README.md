@@ -8,7 +8,7 @@ Live demo: [browserqc.org](https://browserqc.org).
 
 Everything runs in WebAssembly + WebGPU (WebGL2 fallback) on your machine, so your images are never shared with the cloud. When an image loads (on startup and on every drag-and-drop):
 
-1. **Segment** — [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) runs a [brainchop](https://github.com/neuroneural/brainchop) model picked from the **Model** menu: `16chan18cls` (fast, default) or `mindmap` (24-channel), each parcellating the brain into 17 gray/white-matter and subcortical regions; `mindsnap` (24-channel), 103 Desikan-Killiany cortical and subcortical regions; or `mindmap PVE`, GM/WM/CSF partial-volume fractions instead of labels. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module — on WebGPU where available, WebGL2 otherwise (so no WebGPU is required).
+1. **Segment** — [`@brainchop/mindgrab`](https://www.npmjs.com/package/@brainchop/mindgrab) runs a [brainchop](https://github.com/neuroneural/brainchop) model picked from the **Model** menu: `mindmap PVE` (default), GM/WM/CSF partial-volume fractions, the closest match to MRIQC; `16chan18cls` (fast) or `mindmap` (24-channel), each parcellating the brain into 17 gray/white-matter and subcortical regions; or `mindsnap` (24-channel), 103 Desikan-Killiany cortical and subcortical regions. The `mindgrab` brain mask also runs, so QC counts extra-cerebral CSF as MRIQC does. Conform (256³ 1 mm), inference and back-projection to the native grid all happen inside the WebAssembly module — on WebGPU where available, WebGL2 otherwise (so no WebGPU is required).
 2. **Overlay** — the labels (or fractions) arrive on the native input grid and are drawn as a colour overlay on the original scan (adjust with the **Opacity** slider).
 3. **Quality control** — [niimath](https://github.com/rordenlab/niimath) computes MRIQC-style anatomical image-quality metrics from the scan and its segmentation (with PVE, each voxel weighted by its tissue fraction, as MRIQC does), shown in the side panel:
    - **CJV** — coefficient of joint variation (noise + intensity non-uniformity); lower is better
@@ -24,7 +24,7 @@ Rendering uses [NiiVue](https://niivue.com/); DICOM import uses [dcm2niix](https
 
 Metric names and definitions follow [MRIQC](https://mriqc.readthedocs.io/en/latest/), so outputs can be diffed against it directly. A **Save** button writes the metrics as MRIQC-style JSON (the CLI writes the same file); drop a BIDS sidecar `.json` alongside the image and it rides along as `bids_meta`.
 
-> This is a fast **approximation** of MRIQC, not a reimplementation: it uses a deep-learning parcellation (or its CAT-lite fractions) rather than MRIQC's Atropos partial-volume maps, and raw intensities rather than an N4-bias-corrected image. Expect the same ballpark and the same ranking, not the same numbers — not yet re-validated against MRIQC with niimath's native `--air` metrics. Not a substitute for MRIQC's normative values.
+> This is a fast **approximation** of MRIQC, not a reimplementation: it uses a deep-learning parcellation (or its CAT-lite fractions) rather than MRIQC's Atropos partial-volume maps, but intensities follow MRIQC's pipeline: niimath clips them to 0–255 as niworkflows does, removes the bias field with N4 (a port of ANTs N4, weighted by the brain mask), and scales them so the eroded-WM median is 1000. Expect the same ballpark and the same ranking, not the same numbers. Not a substitute for MRIQC's normative values.
 
 ## Develop
 
@@ -43,16 +43,16 @@ npm run test:parity # build, then compare the web app with the native CLI (needs
 
 ### Command line
 
-The same pipeline without a browser or Node — Python 3.8+ standard library only — on the native tools: `brainchop-<model>`
+The same pipeline without a browser or Node — Python 3.8+ standard library only — on the native tools: `brainchop-mindgrab` and `brainchop-<model>`
 ([brainchopC releases](https://github.com/neuroneural/brainchopC/releases)) and
-[`niimath`](https://pypi.org/project/niimath/) ≥ v1.0.20260926 on `PATH` (or in `$BROWSERQC_BIN`):
+[`niimath`](https://pypi.org/project/niimath/) newer than v1.0.20260926 (with `--qc --pve --mask` and N4; not yet released) on `PATH` (or in `$BROWSERQC_BIN`):
 
 ```bash
-python3 cli/qc.py --in T1.nii.gz --out qc.json [--model 16chan18cls|mindmap|mindsnap|mindmap-pve] [--bids sidecar.json]
+python3 cli/qc.py --in T1.nii.gz --out qc.json [--model mindmap-pve|16chan18cls|mindmap|mindsnap] [--bids sidecar.json]
 ```
 
 It writes the report the page's **Save** does. `npm run test:parity` checks the two agree on the
-bundled image: segmentation Dice ≥ 0.999, median metric difference < 0.01 %, worst ~2 % (a kurtosis).
+bundled image: segmentation and brain-mask Dice ≥ 0.999, median metric difference ≤ 0.02 %, worst ~0.4 % (`BROWSERQC_T1=… npm run test:parity` checks another image).
 
 ## License
 

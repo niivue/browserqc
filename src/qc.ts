@@ -1,8 +1,8 @@
 /**
  * MRIQC-style quality-control metrics for the segmentation result.
  *
- * niimath's `--qc` reads the input T1 + a matching segmentation and emits a JSON
- * report of anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions,
+ * niimath's `--qc` reads the input T1, a matching segmentation (labels or PVE
+ * fractions) and the brain mask, and emits a JSON report of anatomical IQMs (CJV, CNR, SNRd, FBER, SNR, WM2MAX, EFC, ICV fractions,
  * per-tissue volume/intensity summaries, background statistics).
  *
  * Tissue grouping lives in models.json, shared with the CLI: each label model's CSF
@@ -114,6 +114,6 @@ export function renderQc(body: HTMLElement, metrics: QcMetrics | null): void {
     <div class="qc-group">${quality}</div>
     <h4 class="qc-subtitle">Tissue composition <span class="qc-subnote">(% intracranial)</span></h4>
     <div class="qc-group">${tissues}</div>
-    <p class="qc-note">A fast MRIQC-style approximation (deep-learning parcellation, raw
-      intensities). Same ballpark and ranking as MRIQC, not the same values.</p>`
+    <p class="qc-note">A fast MRIQC-style approximation (deep-learning segmentation; MRIQC's clip, N4
+      and WM scaling). Close to MRIQC, not identical.</p>`
 }
