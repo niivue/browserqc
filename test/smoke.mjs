@@ -1,6 +1,6 @@
 // Headless-WebGPU smoke for BrowserQC (npm run test:e2e builds first). Drives the
 // production build: NiiVue attach, Vite worker URLs, the default image's auto run
-// (segmentation → overlay → niimath --qc → panel), a hard-label model, the Opacity slider,
+// (segmentation → overlay → niimath --qc → panel), a hard-label model, the Opacity slider, View and Right drag pickers,
 // About and the Rate widget. Wiring only: it asserts the runs complete clean, not
 // segmentation/QC values.
 import { readFileSync } from 'node:fs'
@@ -33,10 +33,16 @@ try {
       el.dispatchEvent(new Event('input', { bubbles: true }))
     }
   })
+  await page.selectOption('#viewPick', 'background')
+  await page.waitForFunction(() => document.getElementById('ovlSlider').disabled)
+  if (process.env.SMOKE_SHOT) await page.waitForTimeout(500).then(() => page.screenshot({ path: process.env.SMOKE_SHOT }))
+  await page.selectOption('#viewPick', 'tissues')
+  check(!(await page.$eval('#ovlSlider', (el) => el.disabled)), 'Opacity still disabled after leaving Background')
+  await page.selectOption('#dragPick', 'pan')
   await page.click('#aboutBtn')
   check(await page.isVisible('#aboutDialog'), 'About dialog did not open')
   await page.click('#closeAboutBtn')
-  console.log('✓ Opacity slider driven, About dialog opens')
+  console.log('✓ Opacity slider, Background view, Right drag driven, About dialog opens')
 
   await page.click('#rateBtn')
   check(await page.isVisible('#rateDialog'), 'Rate dialog did not open')
