@@ -7,8 +7,8 @@
   <!-- empty favicon: suppress the browser's default /favicon.ico request (404) -->
   <link rel="icon" href="data:," />
   <title>BrowserQC</title>
-  <script type="module" crossorigin src="/assets/index-P1r1yRc_.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-waDD-ccs.css">
+  <script type="module" crossorigin src="/assets/index-BHYtCLv9.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-g54d4pKN.css">
 </head>
 
 <body>
@@ -35,6 +35,20 @@
       <div class="qc-opacity" hidden>
         <label for="seriesPick">Series</label>
         <select id="seriesPick"></select>
+      </div>
+      <div class="qc-opacity">
+        <label for="viewPick">View</label>
+        <select id="viewPick">
+          <option value="tissues" selected>Gray/White/CSF</option>
+          <option value="background" title="MRIQC's background view: artifacts show in the air around the head">Background</option>
+        </select>
+      </div>
+      <div class="qc-opacity">
+        <label for="dragPick">Right drag</label>
+        <select id="dragPick" aria-label="Right-button drag">
+          <option value="contrast" selected>Contrast</option>
+          <option value="pan">Pan/zoom</option>
+        </select>
       </div>
       <div class="qc-opacity">
         <label for="ovlSlider">Opacity</label>
