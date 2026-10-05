@@ -7,8 +7,8 @@
   <!-- empty favicon: suppress the browser's default /favicon.ico request (404) -->
   <link rel="icon" href="data:," />
   <title>BrowserQC</title>
-  <script type="module" crossorigin src="/assets/index-DgFgPcaK.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-DgF_QucS.css">
+  <script type="module" crossorigin src="/assets/index-P1r1yRc_.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-waDD-ccs.css">
 </head>
 
 <body>
@@ -18,9 +18,8 @@
     </main>
     <aside id="qcPanel" aria-label="Image quality metrics">
       <div class="qc-head">
-        <h3 class="qc-title">Image Quality
-          <span class="qc-titlesub">MRIQC-style</span>
-        </h3>
+        <h3 class="qc-title">Image Quality</h3>
+        <button id="rateBtn" class="qc-about" type="button" disabled title="Rate the image quality yourself">Rate</button>
         <button id="saveBtn" class="qc-about" type="button" disabled title="Save metrics as MRIQC-style JSON">Save</button>
         <button id="aboutBtn" class="qc-about" type="button">About</button>
       </div>
@@ -64,6 +63,33 @@
     </form>
   </dialog>
 
+  <!-- Non-modal (show(), not showModal()): the viewer stays usable while rating. -->
+  <dialog id="rateDialog" aria-labelledby="rateTitle">
+    <form id="rateForm" method="dialog">
+      <h3 id="rateTitle">Rate image</h3>
+      <details open>
+        <summary>Overall quality rating</summary>
+        <input type="range" min="1" max="4" step="0.05" value="2.5" id="rating" aria-label="Overall quality rating" />
+        <ol id="ratingBar" class="rate-bar"><li>Exclude</li><li>Poor</li><li>Acceptable</li><li>Excellent</li></ol>
+      </details>
+      <details>
+        <summary>Record specific artifacts</summary>
+        <fieldset id="rateArtifacts"></fieldset>
+      </details>
+      <details>
+        <summary>Extra details</summary>
+        <label for="rateComments">Comments</label>
+        <textarea id="rateComments" rows="3"></textarea>
+        <label for="rateConfidence">Rater confidence</label>
+        <input type="range" min="0" max="4" step="0.05" value="3.5" id="rateConfidence" />
+        <ol id="confidenceBar" class="rate-bar"><li>Doubtful</li><li>Confident</li></ol>
+      </details>
+      <button id="rateSave" type="button" disabled title="Unlocks on your first edit at least 10 s after the image is displayed">Save</button>
+      <button type="button" disabled title="Not available: there is no rating server yet">Share publicly</button>
+      <button>Close</button>
+    </form>
+  </dialog>
+
   <dialog id="aboutDialog">
     <form method="dialog">
       <h3><a href="https://github.com/niivue/browserqc" target="_blank" rel="noopener">BrowserQC</a></h3>
@@ -79,6 +105,8 @@
         <li><strong>Quality metrics</strong> — <a href="https://github.com/rordenlab/niimath" target="_blank"
             rel="noopener">niimath</a> computes MRIQC-style image-quality metrics (CJV, CNR, SNR, WM2MAX, EFC,
           tissue composition) from the scan and its segmentation</li>
+        <li><strong>Rate</strong> — your own rating, as in MRIQC's reports: overall quality, specific artifacts,
+          comments and confidence, saved as MRIQC's rating JSON</li>
       </ul>
       <p>Rendering uses <a href="https://niivue.com/" target="_blank" rel="noopener">NiiVue</a>;
         DICOM import uses <a href="https://github.com/rordenlab/dcm2niix" target="_blank" rel="noopener">dcm2niix</a>.
