@@ -51,7 +51,6 @@ let busy = false
 let dropped = false // a drop was accepted: the default image must not run over it
 let rated: Series | null = null // the image the Rate form belongs to
 let tissueColormaps: Record<string, string> = {}
-let grayWindow = [0, 0] // the T1's gray window (load-time or dragged), restored when leaving the background view
 let noise: number[] | null = null // the T1's background window, computed on first use
 
 // Nearest on 2D slices: QC wants raw voxels, not smoothed ones (NiiVue's 3D render is always linear).
@@ -98,7 +97,7 @@ function noiseWindow(v: NVImage): number[] {
   const stride = Math.ceil(v.nVox3D / 1e6) // ponytail: ≤ 1M samples of the first volume, plenty for a display window
   const vals = Float64Array.from({ length: Math.ceil(v.nVox3D / stride) }, (_, i) => img[i * stride])
     .filter((x) => x !== 0 && Number.isFinite(x)).sort()
-  if (!vals.length) return grayWindow // an empty image has no background to show
+  if (!vals.length) return [v.robustMin, v.robustMax] // an empty image has no background to show
   const slope = v.hdr.scl_slope || 1
   return [vals[0], vals[Math.floor(0.61 * (vals.length - 1))]].map((x) => x * slope + v.hdr.scl_inter)
 }
@@ -115,8 +114,7 @@ async function showView(): Promise<void> {
   const background = viewPick.value === 'background'
   ovlSlider.disabled = background
   setOpacity()
-  if (t1.colormap === 'gray') grayWindow = [t1.calMin, t1.calMax] // fresh load, or a contrast drag to keep
-  const [calMin, calMax] = background ? (noise ??= noiseWindow(t1)) : grayWindow
+  const [calMin, calMax] = background ? (noise ??= noiseWindow(t1)) : [t1.robustMin, t1.robustMax]
   await nv.setVolume(0, { colormap: background ? 'viridis' : 'gray', isColormapInverted: background, calMin, calMax })
 }
 
